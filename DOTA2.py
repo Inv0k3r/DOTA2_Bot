@@ -5,7 +5,6 @@ from DOTA2_dicts import *
 from player import player
 import random
 import time
-import message_sender
 from typing import Dict
 
 # 这里替换成你自己的API
@@ -83,8 +82,7 @@ def generate_party_message(match_id: int, player_list: [player]):
     try:
         match = get_match_detail_info(match_id=match_id)
     except DOTA2HTTPError:
-        message_sender.message("DOTA2开黑战报生成失败")
-        return
+        return "DOTA2开黑战报生成失败"
 
     # 比赛模式
     mode_id = match["game_mode"]
@@ -199,7 +197,7 @@ def generate_party_message(match_id: int, player_list: [player]):
     print_str += "战绩详情: https://zh.dotabuff.com/matches/{}".format(match_id)
 
     # print(print_str)
-    message_sender.message(print_str)
+    return print_str
 
 
 # 接收某局比赛的玩家信息, 生成单排战报
@@ -208,8 +206,7 @@ def generate_solo_message(match_id: int, player_obj: player):
     try:
         match = get_match_detail_info(match_id=match_id)
     except DOTA2HTTPError:
-        message_sender.message("DOTA2单排战报生成失败")
-        return
+        return "DOTA2单排战报生成失败"
     # 比赛模式
     mode_id = match["game_mode"]
     if mode_id in (15, 19):  # 各种活动模式不通报
@@ -304,4 +301,4 @@ def generate_solo_message(match_id: int, player_obj: player):
     print_str += "战绩详情: https://zh.dotabuff.com/matches/{}".format(match_id)
 
     # print(print_str)
-    message_sender.message(print_str)
+    return print_str
