@@ -14,6 +14,7 @@ YYGQ的文来自于[dota2_watcher](https://github.com/unilink233/dota2_watcher)
 **我这两天找了一下没有合适的免费开源微信机器人, 所以可能不会有微信版本**
 
 **一键脚本目前可能不太好用, 建议按照安装指南使用, 近期会发布一个更易于操作的版本一键脚本**
+
 ## 一键脚本
 
 - 修改`config.json`来配置bot

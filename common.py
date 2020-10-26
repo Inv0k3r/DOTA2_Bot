@@ -16,8 +16,8 @@ def steam_id_convert_64_to_32(long_steamID: int) -> int:
 
 # 返回一个最新比赛变化过的字典
 # 格式: { match_id1: [player1, player2, player3], match_id2: [player1, player2]}
-def update_DOTA2() -> Dict[int, List]:
-    result = Dict[int, List]
+def update_DOTA2() -> Dict:
+    result = {}
     for i in PLAYER_LIST:
         try:
             match_id = DOTA2.get_last_match_id_by_short_steamID(i.short_steamID)
