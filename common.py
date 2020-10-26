@@ -4,7 +4,7 @@ import DOTA2
 from DBOper import update_DOTA2_match_ID
 from player import PLAYER_LIST
 from typing import List, Dict
-
+from message_sender import message as send
 
 def steam_id_convert_32_to_64(short_steamID: int) -> int:
     return short_steamID + 76561197960265728
@@ -42,6 +42,12 @@ def update_and_send_message_DOTA2():
     result = update_DOTA2()
     for match_id in result:
         if len(result[match_id]) > 1:
-            DOTA2.generate_party_message(match_id=match_id, player_list=result[match_id])
+            send(DOTA2.generate_party_message(
+                match_id=match_id,
+                player_list=result[match_id]
+            )
         elif len(result[match_id]) == 1:
-            DOTA2.generate_solo_message(match_id=match_id, player_obj=result[match_id][0])
+            send(DOTA2.generate_solo_message(
+                match_id=match_id,
+                player_obj=result[match_id][0]
+            )
