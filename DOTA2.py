@@ -178,7 +178,7 @@ def generate_party_message(match_id: int, player_list: [player]):
 
     for i in player_list:
         nickname = i.nickname
-        hero = HEROES_LIST_CHINESE[i.hero] if i.hero in HEROES_LIST_CHINESE else '不知道什么鬼'
+        hero = random.choice(HEROES_LIST_CHINESE[i.hero]) if i.hero in HEROES_LIST_CHINESE else '不知道什么鬼'
         kda = i.kda
         last_hits = i.last_hit
         damage = i.damage
@@ -282,7 +282,7 @@ def generate_solo_message(match_id: int, player_obj: player):
     print_str += '游戏模式: [{}/{}]\n'.format(mode, lobby)
 
     nickname = player_obj.nickname
-    hero = HEROES_LIST_CHINESE[player_obj.hero] if player_obj.hero in HEROES_LIST_CHINESE else '不知道什么鬼'
+    hero = random.choice(HEROES_LIST_CHINESE[player_obj.hero]) if player_obj.hero in HEROES_LIST_CHINESE else '不知道什么鬼'
     kda = player_obj.kda
     last_hits = player_obj.last_hit
     damage = player_obj.damage
