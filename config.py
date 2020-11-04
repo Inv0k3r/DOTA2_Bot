@@ -14,3 +14,6 @@ ENABLE_URL = False
 
 # 是否仅使用英雄默认名字
 DEFAULT_NAME_ONLY = False
+
+# 是否启用Steam游戏状态监视
+ENABLE_STEAM_WATCHER = True

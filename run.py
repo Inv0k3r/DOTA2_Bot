@@ -5,7 +5,7 @@ import json
 import config
 from player import PLAYER_LIST, player
 from DBOper import is_player_stored, insert_info, update_DOTA2_match_ID
-from common import update_and_send_message_DOTA2, steam_id_convert_32_to_64
+from common import steam_id_convert_32_to_64, update_and_send_message_DOTA2, update_and_send_gaming_status
 import DOTA2
 import message_sender
 
@@ -42,12 +42,18 @@ def init():
 
 
 def update(player_num: int):
+    if config.ENABLE_STEAM_WATCHER:
+        update_and_send_gaming_status()
     update_and_send_message_DOTA2()
     # dota每日请求限制100,000次
     # 每个人假设每次更新都需要请求两次
     # 所以请求间隔可以设置为 (24 * 60 * 60 / (100000 / (2 * player_num)))
     # 10个人的情况下, 会17秒更新一次信息
-    time.sleep((24 * 60 * 60) / (100000 / (2 * player_num)))
+    # 但是其实每分钟更新一次即可保证及时
+    if player_num >= 30:
+        time.sleep((24 * 60 * 60) / (100000 / (2 * player_num)))
+    else:
+        time.sleep(60)
 
 
 def main():

@@ -4,6 +4,7 @@ import DOTA2
 from DBOper import update_DOTA2_match_ID
 from player import PLAYER_LIST
 from typing import List, Dict
+from steam import gaming_status_watcher
 from message_sender import message as send
 
 def steam_id_convert_32_to_64(short_steamID: int) -> int:
@@ -47,3 +48,9 @@ def update_and_send_message_DOTA2():
         )
         if isinstance(msg, str):
             send(msg)
+
+
+def update_and_send_gaming_status():
+    msg = gaming_status_watcher()
+    if isinstance(msg, str):
+        send(msg)

@@ -35,3 +35,17 @@ def is_player_stored(short_steamID: int) -> bool:
     if len(c.fetchall()) == 0:
         return False
     return True
+
+def get_playing_game(short_steamID):
+    ret = c.execute(
+        "SELECT gamename, last_update FROM playerInfo WHERE short_steamID=?",
+        (short_steamID,)
+    ).fetchone()
+    return (ret[0], ret[1]) if ret else ('', 0)
+
+def update_playing_game(short_steamID, gamename, timestamp):
+    c.execute(
+        "UPDATE playerInfo SET gamename=?, last_update=? WHERE short_steamID=?",
+        (gamename, timestamp, short_steamID)
+    )
+    conn.commit()
