@@ -1,27 +1,18 @@
 #!/usr/bin/python
 # -*- coding: UTF-8 -*-
 import time
-from common import update_and_send_message_DOTA2, steam_id_convert_32_to_64
 import json
+import config
 from player import PLAYER_LIST, player
 from DBOper import is_player_stored, insert_info, update_DOTA2_match_ID
+from common import update_and_send_message_DOTA2, steam_id_convert_32_to_64
 import DOTA2
 import message_sender
 
 
 def init():
     # 读取配置文件
-    try:
-        config = json.load(open("config.json", "r", encoding='UTF-8'))
-        DOTA2.api_key = config["api_key"]
-        message_sender.url = config["mirai_url"]
-        message_sender.authKey = config["mirai_auth_key"]
-        message_sender.bot_qq = config["bot_qq"]
-        message_sender.target = config["qq_group_id"]
-        player_list = config["player_list"]
-    except Exception:
-        print("读取配置文件失败, 请检查配置文件")
-        return -1
+    player_list = config.PLAYER_LIST
     # 读取玩家信息
     for i in player_list:
         nickname = i[0]

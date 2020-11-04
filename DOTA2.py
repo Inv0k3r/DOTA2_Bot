@@ -6,10 +6,7 @@ from player import player
 import random
 import time
 from typing import Dict
-
-# 这里替换成你自己的API
-# http://steamcommunity.com/dev/apikey
-api_key = "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+from config import API_KEY
 
 # 异常处理
 class DOTA2HTTPError(Exception):
@@ -27,7 +24,7 @@ def get_team_by_slot(slot: int) -> int:
 def get_last_match_id_by_short_steamID(short_steamID: int) -> int:
     # get match_id
     url = 'https://api.steampowered.com/IDOTA2Match_570/GetMatchHistory/v001/?key={}' \
-          '&account_id={}&matches_requested=1'.format(api_key, short_steamID)
+          '&account_id={}&matches_requested=1'.format(API_KEY, short_steamID)
     try:
         response = requests.get(url)
     except requests.RequestException:
@@ -52,7 +49,7 @@ def get_last_match_id_by_short_steamID(short_steamID: int) -> int:
 def get_match_detail_info(match_id: int) -> Dict:
     # get match detail
     url = 'https://api.steampowered.com/IDOTA2Match_570/GetMatchDetails/V001/' \
-          '?key={}&match_id={}'.format(api_key, match_id)
+          '?key={}&match_id={}'.format(API_KEY, match_id)
     try:
         response = requests.get(url)
     except requests.RequestException:

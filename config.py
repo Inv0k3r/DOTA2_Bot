@@ -1,0 +1,10 @@
+API_KEY = "xxxxxx"
+BOT_QQ = 10000
+BOT_PASSWORD = "xxxx"
+QQ_GROUP_ID = 10000
+MIRAI_URL = "http://127.0.0.1:8080"
+MIRAI_AUTH_KEY = "mVJ4OMqZAvuVty5I"
+PLAYER_LIST = [
+    ["教练", 139136624],
+    ["崩哥", 165652483]
+]
