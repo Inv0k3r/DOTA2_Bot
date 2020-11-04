@@ -2,14 +2,15 @@
 # -*- coding: UTF-8 -*-
 import json
 import requests
+import config
 
-url = "http://127.0.0.1:8080"
+url = config.MIRAI_URL
 # 群号
-target = 1111111111
+target = config.QQ_GROUP_ID
 # bot的QQ号
-bot_qq = 1111111111
+bot_qq = config.BOT_QQ
 # mirai http的auth key
-authKey = "xxxxxxx"
+authKey = config.MIRAI_AUTH_KEY
 
 
 def message(m: str):

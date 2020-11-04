@@ -17,7 +17,7 @@ YYGQ的文来自于[dota2_watcher](https://github.com/unilink233/dota2_watcher)
 
 ## 一键脚本
 
-- 修改`config.json`来配置bot
+- 修改`config.py`来配置bot
 
 - `chmod +x go.sh`
 
@@ -33,11 +33,11 @@ YYGQ的文来自于[dota2_watcher](https://github.com/unilink233/dota2_watcher)
 
 - 通过`screen -S bot && ./miraiOK_linux-amd64`启动miraiOK, 登陆你的BOT账号, 这一步可能有一些登陆上的问题, 可以自行`screen -r bot`上去查看
 
-- 在[这里](http://steamcommunity.com/dev/apikey)申请你的steam API key, 修改`config.json`中的`api_key`
+- 在[这里](http://steamcommunity.com/dev/apikey)申请你的steam API key, 修改`config.py`中的`api_key`
 
 - 安装requests模块和json模块: `pip install requests,json`
 
-- 修改config.json来配置bot
+- 修改config.py来配置bot
 
 - 通过screen来后台运行: `screen -S dota_bot`, Windows可以直接运行miraiok
 
