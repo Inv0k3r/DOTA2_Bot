@@ -6,7 +6,7 @@ from player import player
 import random
 import time
 from typing import Dict
-from config import API_KEY
+from config import API_KEY, ENABLE_URL, DEFAULT_NAME_ONLY
 
 # 异常处理
 class DOTA2HTTPError(Exception):
@@ -159,7 +159,13 @@ def generate_match_message(match_id: int, player_list: [player]):
 
     for i in player_list:
         nickname = i.nickname
-        hero = random.choice(HEROES_LIST_CHINESE[i.hero]) if i.hero in HEROES_LIST_CHINESE else '不知道什么鬼'
+        if i.hero in HEROES_LIST_CHINESE:
+            if DEFAULT_NAME_ONLY:
+                hero = HEROES_LIST_CHINESE[i.hero][0]
+            else:
+                hero = random.choice(HEROES_LIST_CHINESE[i.hero])
+        else:
+            hero = '不知道什么鬼'
         kda = i.kda
         last_hits = i.last_hit
         damage = i.damage
@@ -177,6 +183,7 @@ def generate_match_message(match_id: int, player_list: [player]):
                     damage, damage_rate, participation, deaths_rate)
         )
 
-    tosend.append('战绩详情: https://zh.dotabuff.com/matches/{}'.format(match_id))
+    if ENABLE_URL:
+        tosend.append('战绩详情: https://zh.dotabuff.com/matches/{}'.format(match_id))
 
     return '\n'.join(tosend)
