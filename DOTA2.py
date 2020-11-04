@@ -80,16 +80,28 @@ def generate_match_message(match_id: int, player_list: [player]):
     except DOTA2HTTPError:
         return "DOTA2比赛战报生成失败"
 
+
+    start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(match['start_time']))
+    duration = match['duration']
+
     # 比赛模式
     mode_id = match["game_mode"]
-    if mode_id in (15, 19):  # 各种活动模式不通报
-        return None
     mode = GAME_MODE[mode_id] if mode_id in GAME_MODE else '未知'
 
     lobby_id = match['lobby_type']
     lobby = LOBBY[lobby_id] if lobby_id in LOBBY else '未知'
 
     player_num = len(player_list)
+    nicknames = '，'.join([player_list[i].nickname for i in range(-player_num,-1)])
+    if nicknames:
+        nicknames += '和'
+    nicknames += player_list[-1].nickname
+
+    if mode_id in (15, 19):  # 各种活动模式仅简单通报
+        return '{}玩了一把[{}/{}]，开始于{}，持续{:.0f}分{:.0f}秒。'.format(
+            nicknames, mode, lobby, start_time, duration / 60, duration % 60
+        )
+
     # 更新玩家对象的比赛信息
     for i in player_list:
         for j in match['players']:
@@ -121,11 +133,6 @@ def generate_match_message(match_id: int, player_list: [player]):
 
     win = match['radiant_win'] == (team == 1)
 
-    nicknames = '，'.join([player_list[i].nickname for i in range(-player_num,-1)])
-    if nicknames:
-        nicknames += '和'
-    nicknames += player_list[-1].nickname
-
     top_kda = 0
     for i in player_list:
         if i.kda > top_kda:
@@ -151,8 +158,6 @@ def generate_match_message(match_id: int, player_list: [player]):
     else:
         tosend.append(random.choice(LOSE_NEGATIVE_PARTY).format(nicknames))
 
-    start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(match['start_time']))
-    duration = match['duration']
     tosend.append('开始时间: {}'.format(start_time))
     tosend.append('持续时间: {:.0f}分{:.0f}秒'.format(duration / 60, duration % 60))
     tosend.append('游戏模式: [{}/{}]'.format(mode, lobby))
