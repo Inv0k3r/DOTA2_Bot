@@ -6,7 +6,7 @@ from player import player
 import random
 import time
 from typing import Dict
-from config import API_KEY
+from config import API_KEY, ENABLE_URL, DEFAULT_NAME_ONLY
 
 # 异常处理
 class DOTA2HTTPError(Exception):
@@ -80,16 +80,33 @@ def generate_match_message(match_id: int, player_list: [player]):
     except DOTA2HTTPError:
         return "DOTA2比赛战报生成失败"
 
+
+    start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(match['start_time']))
+    duration = match['duration']
+
     # 比赛模式
     mode_id = match["game_mode"]
-    if mode_id in (15, 19):  # 各种活动模式不通报
-        return None
-    mode = GAME_MODE[mode_id] if mode_id in GAME_MODE else '未知'
+    mode = GAME_MODE.get(mode_id, '未知')
 
     lobby_id = match['lobby_type']
-    lobby = LOBBY[lobby_id] if lobby_id in LOBBY else '未知'
+    lobby = LOBBY.get(lobby_id, '未知')
 
     player_num = len(player_list)
+    nicknames = '，'.join([player_list[i].nickname for i in range(-player_num,-1)])
+    if nicknames:
+        nicknames += '和'
+    nicknames += player_list[-1].nickname
+
+    team = player_list[0].dota2_team
+
+    win = match['radiant_win'] == (team == 1)
+    ying = "赢" if win else "输"
+
+    if mode_id in (15, 19):  # 各种活动模式仅简单通报
+        return '{}玩了一把[{}/{}]，开始于{}，持续{}分{}秒，看起来好像是{}了。'.format(
+            nicknames, mode, lobby, start_time, duration // 60, duration % 60, ying
+        )
+
     # 更新玩家对象的比赛信息
     for i in player_list:
         for j in match['players']:
@@ -109,7 +126,6 @@ def generate_match_message(match_id: int, player_list: [player]):
                 break
 
     # 队伍信息
-    team = player_list[0].dota2_team
     team_damage = 0
     team_kills = 0
     team_deaths = 0
@@ -118,13 +134,6 @@ def generate_match_message(match_id: int, player_list: [player]):
             team_damage += i['hero_damage']
             team_kills += i['kills']
             team_deaths += i['deaths']
-
-    win = match['radiant_win'] == (team == 1)
-
-    nicknames = '，'.join([player_list[i].nickname for i in range(-player_num,-1)])
-    if nicknames:
-        nicknames += '和'
-    nicknames += player_list[-1].nickname
 
     top_kda = 0
     for i in player_list:
@@ -151,15 +160,19 @@ def generate_match_message(match_id: int, player_list: [player]):
     else:
         tosend.append(random.choice(LOSE_NEGATIVE_PARTY).format(nicknames))
 
-    start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(match['start_time']))
-    duration = match['duration']
     tosend.append('开始时间: {}'.format(start_time))
-    tosend.append('持续时间: {:.0f}分{:.0f}秒'.format(duration / 60, duration % 60))
+    tosend.append('持续时间: {}分{}秒'.format(duration // 60, duration % 60))
     tosend.append('游戏模式: [{}/{}]'.format(mode, lobby))
 
     for i in player_list:
         nickname = i.nickname
-        hero = random.choice(HEROES_LIST_CHINESE[i.hero]) if i.hero in HEROES_LIST_CHINESE else '不知道什么鬼'
+        if i.hero in HEROES_LIST_CHINESE:
+            if DEFAULT_NAME_ONLY:
+                hero = HEROES_LIST_CHINESE[i.hero][0]
+            else:
+                hero = random.choice(HEROES_LIST_CHINESE[i.hero])
+        else:
+            hero = '不知道什么鬼'
         kda = i.kda
         last_hits = i.last_hit
         damage = i.damage
@@ -177,6 +190,7 @@ def generate_match_message(match_id: int, player_list: [player]):
                     damage, damage_rate, participation, deaths_rate)
         )
 
-    tosend.append('战绩详情: https://zh.dotabuff.com/matches/{}'.format(match_id))
+    if ENABLE_URL:
+        tosend.append('战绩详情: https://zh.dotabuff.com/matches/{}'.format(match_id))
 
     return '\n'.join(tosend)
