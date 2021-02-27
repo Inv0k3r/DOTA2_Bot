@@ -5,8 +5,9 @@ QQ_GROUP_ID = 10000
 MIRAI_URL = "http://127.0.0.1:8080"
 MIRAI_AUTH_KEY = "mVJ4OMqZAvuVty5I"
 PLAYER_LIST = [
-    ["教练", 139136624],
-    ["崩哥", 165652483]
+    ["枫哥", 90045009],
+    ["甲哥", 113705693],
+    ["翔哥", 104744847]
 ]
 
 # 是否在战报中附带链接（带链接的消息可能因风控发不出去）
@@ -16,4 +17,4 @@ ENABLE_URL = False
 DEFAULT_NAME_ONLY = False
 
 # 是否启用Steam游戏状态监视
-ENABLE_STEAM_WATCHER = True
+ENABLE_STEAM_WATCHER = False
