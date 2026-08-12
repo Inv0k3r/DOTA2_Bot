@@ -99,6 +99,63 @@ class CommandHandlerTest(unittest.TestCase):
         self.assertTrue(command_handler.handle_event(event))
         self.assertIn('@bot 帮助', send.call_args.args[0])
 
+    @patch('command_handler.send')
+    @patch('command_handler.get_prediction_odds', return_value={
+        'games': 10, 'wins': 6, 'win': 1.8, 'lose': 2.2,
+    })
+    @patch('command_handler.place_prediction_bet', return_value={
+        'id': 1, 'changed': False, 'balance': 900,
+    })
+    def test_member_can_bet_on_next_match_without_api_call(self, place_bet, odds, send):
+        PLAYER_LIST.append(Player('测试玩家', 42, 76561197960265770, 100))
+        event = dict(self.admin_event, self_id=999, user_id=321,
+                     sender={'role': 'member', 'card': '竞猜人'}, message=[
+                         {'type': 'at', 'data': {'qq': '999'}},
+                         {'type': 'text', 'data': {'text': ' 竞猜 测试玩家 赢 100'}},
+                     ])
+
+        self.assertTrue(command_handler.handle_event(event))
+
+        place_bet.assert_called_once_with(
+            config.QQ_GROUP_ID, 321, '竞猜人', 42, '测试玩家', True, 100, 1.8, 100,
+        )
+        self.assertIn('下注成功', send.call_args.args[0])
+
+    @patch('command_handler.send')
+    @patch('command_handler.get_prediction_score', return_value={
+        'user_name': '竞猜人', 'score': 1200, 'wins': 3, 'losses': 1,
+        'wagered': 500, 'returned': 700, 'game_earned': 50,
+    })
+    def test_member_can_query_prediction_score(self, get_score, send):
+        event = dict(self.admin_event, self_id=999, user_id=321,
+                     sender={'role': 'member'}, message=[
+                         {'type': 'at', 'data': {'qq': '999'}},
+                         {'type': 'text', 'data': {'text': ' 我的积分'}},
+                     ])
+
+        self.assertTrue(command_handler.handle_event(event))
+        self.assertIn('余额 1200点', send.call_args.args[0])
+        self.assertIn('净收益 +200', send.call_args.args[0])
+
+    @patch('command_handler.send')
+    @patch('command_handler.get_prediction_leaderboard', return_value=[{
+        'user_id': 321, 'user_name': 'player', 'score': 1350,
+        'wins': 4, 'losses': 1, 'wagered': 800, 'returned': 1050,
+        'game_earned': 100,
+    }])
+    def test_member_can_query_prediction_leaderboard(self, leaderboard, send):
+        event = dict(self.admin_event, self_id=999, user_id=321,
+                     sender={'role': 'member'}, message=[
+                         {'type': 'at', 'data': {'qq': '999'}},
+                         {'type': 'text', 'data': {'text': ' \u7ade\u731c\u699c'}},
+                     ])
+
+        self.assertTrue(command_handler.handle_event(event))
+        leaderboard.assert_called_once_with(config.QQ_GROUP_ID)
+        output = send.call_args.args[0]
+        self.assertIn('player', output)
+        self.assertIn('+250', output)
+
 
 if __name__ == '__main__':
     unittest.main()

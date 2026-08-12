@@ -10,12 +10,18 @@ import config
 import DOTA2
 from DBOper import (
     add_comment_rule,
+    bind_prediction_player,
     delete_comment_rule,
     delete_player_alias,
     disable_player,
     get_comment_rules,
     get_enabled_players,
     get_match_id_by_message_id,
+    get_open_prediction_bets,
+    get_prediction_leaderboard,
+    get_prediction_odds,
+    get_prediction_score,
+    place_prediction_bet,
     save_comment_vote,
     set_combo_name,
     set_player_alias,
@@ -260,6 +266,110 @@ def _set_combo(arguments, event):
     return '组合命名成功：{}「{}」'.format('、'.join(player.nickname for player in players), name)
 
 
+def _sender_name(event):
+    sender = event.get('sender') or {}
+    return (sender.get('card') or sender.get('nickname') or str(event.get('user_id', 0)))[:40]
+
+
+def _mentioned_user(event):
+    bot_id = str(event.get('self_id', ''))
+    message = event.get('message', '')
+    if isinstance(message, list):
+        for segment in message:
+            if segment.get('type') == 'at':
+                value = str(segment.get('data', {}).get('qq', ''))
+                if value and value != bot_id and value.isdigit():
+                    return int(value)
+    values = re.findall(r'\[CQ:at,qq=(\d+)\]', str(message))
+    return next((int(value) for value in values if value != bot_id), None)
+
+
+def _place_prediction(arguments, event):
+    parts = arguments.rsplit(None, 2)
+    if len(parts) != 3 or parts[1] not in ('赢', '输') or not parts[2].isdigit():
+        return '格式：竞猜 <玩家> 赢/输 <点数>\n示例：@bot 竞猜 椒吉米 赢 100'
+    stake = int(parts[2])
+    if not 1 <= stake <= 100000:
+        return '下注点数必须在 1 到 100000 之间。'
+    tracked = _find_player(parts[0])
+    if not tracked:
+        return '没找到监控玩家：{}'.format(parts[0])
+    odds = get_prediction_odds(config.QQ_GROUP_ID, tracked.short_steamID)
+    locked_odds = odds['win'] if parts[1] == '赢' else odds['lose']
+    try:
+        result = place_prediction_bet(
+            config.QQ_GROUP_ID, event.get('user_id', 0), _sender_name(event),
+            tracked.short_steamID, tracked.nickname, parts[1] == '赢', stake,
+            locked_odds, int(tracked.last_DOTA2_match_ID),
+        )
+    except ValueError as exc:
+        return '下注失败：{}'.format(exc)
+    action = '已改押' if result['changed'] else '下注成功'
+    return '{}：{} 下一场{} {}点｜赔率 {:.2f}｜潜在返还 {}点｜余额 {}点'.format(
+        action, tracked.nickname, parts[1], stake, locked_odds,
+        int(round(stake * locked_odds)), result['balance'])
+
+
+def _my_predictions(event):
+    bets = get_open_prediction_bets(config.QQ_GROUP_ID, event.get('user_id', 0))
+    if not bets:
+        return '你目前没有待结算竞猜。\n格式：@bot 竞猜 <玩家> 赢/输 <点数>'
+    lines = ['你的待结算竞猜：']
+    lines.extend('• {} 下一场{}｜{}点 × {:.2f}｜潜在返还{}点'.format(
+                     item['target_nickname'], '赢' if item['prediction'] else '输',
+                     item['stake'], item['odds'], int(round(item['stake'] * item['odds'])))
+                 for item in bets)
+    return '\n'.join(lines)
+
+
+def _prediction_score(event):
+    score = get_prediction_score(config.QQ_GROUP_ID, event.get('user_id', 0))
+    total = score['wins'] + score['losses']
+    rate = 100 * score['wins'] / total if total else 0
+    net = score['returned'] - score['wagered']
+    return ('🎲 {}｜余额 {}点｜{}胜{}负｜命中率 {:.0f}%\n'
+            '累计下注 {}｜累计返还 {}｜竞猜净收益 {:+d}｜完赛奖励 {}').format(
+        score['user_name'], score['score'], score['wins'], score['losses'], rate,
+        score['wagered'], score['returned'], net, score['game_earned'])
+
+
+def _prediction_board():
+    rows = get_prediction_leaderboard(config.QQ_GROUP_ID)
+    if not rows:
+        return '竞猜榜还是空的，发送 @bot 竞猜 <玩家> 赢/输 <点数> 抢个榜一。'
+    lines = ['🎲 竞猜积分榜']
+    for index, row in enumerate(rows, 1):
+        total = row['wins'] + row['losses']
+        rate = 100 * row['wins'] / total if total else 0
+        net = row['returned'] - row['wagered']
+        lines.append('{}. {}｜{}点｜{}胜{}负｜{:.0f}%｜净收益{:+d}'.format(
+            index, row['user_name'], row['score'], row['wins'], row['losses'], rate, net))
+    return '\n'.join(lines)
+
+
+def _prediction_odds(arguments):
+    tracked = _find_player(arguments)
+    if not tracked:
+        return '没找到监控玩家：{}'.format(arguments)
+    odds = get_prediction_odds(config.QQ_GROUP_ID, tracked.short_steamID)
+    record = '{}胜{}负'.format(odds['wins'], odds['games'] - odds['wins']) if odds['games'] else '暂无历史'
+    return '🎲 {}｜历史 {}｜赢 {:.2f} / 输 {:.2f}'.format(
+        tracked.nickname, record, odds['win'], odds['lose'])
+
+
+def _bind_prediction_player(arguments, event):
+    user_id = _mentioned_user(event)
+    if user_id is None:
+        return '格式：绑定玩家 @群友 <监控玩家>'
+    tracked = _find_player(arguments)
+    if not tracked:
+        return '没找到监控玩家：{}'.format(arguments)
+    bind_prediction_player(config.QQ_GROUP_ID, user_id, str(user_id),
+                           tracked.short_steamID, tracked.nickname)
+    return '已绑定：QQ {} ↔ {}。该玩家每完成一场战报比赛奖励 50 点。'.format(
+        user_id, tracked.nickname)
+
+
 def _reply_interaction(text, event):
     reply_id = _reply_message_id(event)
     if reply_id is None:
@@ -303,6 +413,10 @@ def _help_text():
         '@bot 组合名 玩家1+玩家2 <名称>\n'
         '@bot 今日红黑榜\n'
         '@bot 谁在连败\n'
+        '@bot 竞猜 <玩家> 赢/输 <点数>\n'
+        '@bot 赔率 <玩家>\n'
+        '@bot 我的竞猜 / 我的积分 / 竞猜榜\n'
+        '管理员：@bot 绑定玩家 @群友 <监控玩家>\n'
         '回复战报并 @bot 鞭尸 [玩家] / 再骂一句 / 锐评太轻\n\n'
         '示例：\n'
         '@bot 加锐评 死亡>=10 60% 泉水通勤大师。\n'
@@ -340,6 +454,28 @@ def handle_event(event):
         return True
     if _was_at_bot(event) and text == '谁在连败':
         send(losing_streaks(PLAYER_LIST), group_id=config.QQ_GROUP_ID)
+        return True
+    if _was_at_bot(event) and (text == '竞猜' or text.startswith('竞猜 ')):
+        send(_place_prediction(text[len('竞猜'):].strip(), event), group_id=config.QQ_GROUP_ID)
+        return True
+    if _was_at_bot(event) and text == '我的竞猜':
+        send(_my_predictions(event), group_id=config.QQ_GROUP_ID)
+        return True
+    if _was_at_bot(event) and text in ('我的积分', '竞猜积分'):
+        send(_prediction_score(event), group_id=config.QQ_GROUP_ID)
+        return True
+    if _was_at_bot(event) and text in ('竞猜榜', '竞猜排行'):
+        send(_prediction_board(), group_id=config.QQ_GROUP_ID)
+        return True
+    if _was_at_bot(event) and (text == '赔率' or text.startswith('赔率 ')):
+        send(_prediction_odds(text[len('赔率'):].strip()), group_id=config.QQ_GROUP_ID)
+        return True
+    if _was_at_bot(event) and (text == '绑定玩家' or text.startswith('绑定玩家 ')):
+        if not _is_admin(event):
+            send('只有群主或管理员能绑定玩家。', group_id=config.QQ_GROUP_ID)
+            return True
+        send(_bind_prediction_player(text[len('绑定玩家'):].strip(), event),
+             group_id=config.QQ_GROUP_ID)
         return True
 
     social_commands = ('加外号', '删外号', '组合名')

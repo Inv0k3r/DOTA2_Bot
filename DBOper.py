@@ -126,6 +126,82 @@ c.execute(
         PRIMARY KEY (group_id, match_id, action)
     )"""
 )
+c.execute(
+    """CREATE TABLE IF NOT EXISTS prediction_bets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        user_name TEXT NOT NULL,
+        target_account_id INTEGER NOT NULL,
+        target_nickname TEXT NOT NULL,
+        prediction INTEGER NOT NULL,
+        stake INTEGER NOT NULL DEFAULT 0,
+        odds REAL NOT NULL DEFAULT 2.0,
+        after_match_id INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        settled_match_id INTEGER,
+        actual_won INTEGER,
+        score_delta INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        settled_at INTEGER
+    )"""
+)
+c.execute(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_prediction_bets_open "
+    "ON prediction_bets(group_id,user_id,target_account_id) WHERE status='open'"
+)
+c.execute(
+    "CREATE INDEX IF NOT EXISTS idx_prediction_bets_target_status "
+    "ON prediction_bets(group_id,target_account_id,status)"
+)
+c.execute(
+    """CREATE TABLE IF NOT EXISTS prediction_scores (
+        group_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        user_name TEXT NOT NULL,
+        score INTEGER NOT NULL DEFAULT 1000,
+        wins INTEGER NOT NULL DEFAULT 0,
+        losses INTEGER NOT NULL DEFAULT 0,
+        wagered INTEGER NOT NULL DEFAULT 0,
+        returned INTEGER NOT NULL DEFAULT 0,
+        game_earned INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id,user_id)
+    )"""
+)
+c.execute(
+    """CREATE TABLE IF NOT EXISTS prediction_player_links (
+        group_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        user_name TEXT NOT NULL,
+        account_id INTEGER NOT NULL,
+        nickname TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id,user_id),
+        UNIQUE (group_id,account_id)
+    )"""
+)
+c.execute(
+    """CREATE TABLE IF NOT EXISTS prediction_game_rewards (
+        group_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        account_id INTEGER NOT NULL,
+        match_id INTEGER NOT NULL,
+        amount INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id,user_id,match_id)
+    )"""
+)
+bet_columns = {row[1] for row in c.execute("PRAGMA table_info(prediction_bets)").fetchall()}
+if 'stake' not in bet_columns:
+    c.execute("ALTER TABLE prediction_bets ADD COLUMN stake INTEGER NOT NULL DEFAULT 0")
+if 'odds' not in bet_columns:
+    c.execute("ALTER TABLE prediction_bets ADD COLUMN odds REAL NOT NULL DEFAULT 2.0")
+score_columns = {row[1] for row in c.execute("PRAGMA table_info(prediction_scores)").fetchall()}
+for column in ('wagered', 'returned', 'game_earned'):
+    if column not in score_columns:
+        c.execute("ALTER TABLE prediction_scores ADD COLUMN {} INTEGER NOT NULL DEFAULT 0".format(column))
 outbox_columns = {
     row[1] for row in c.execute("PRAGMA table_info(match_outbox)").fetchall()
 }
@@ -448,6 +524,206 @@ def get_today_stats(group_id, since_timestamp):
     ).fetchall()
     keys = ('account_id','nickname','games','wins','kills','deaths','assists')
     return [dict(zip(keys, row)) for row in rows]
+
+
+def get_prediction_odds(group_id, target_account_id):
+    row = c.execute(
+        """SELECT COUNT(*),COALESCE(SUM(won),0) FROM match_stats
+           WHERE group_id=? AND account_id=?""",
+        (int(group_id), int(target_account_id)),
+    ).fetchone()
+    games, wins = int(row[0]), int(row[1])
+    win_probability = (wins + 5.0) / (games + 10.0)
+    win_probability = min(0.8, max(0.2, win_probability))
+    def offered(probability):
+        return round(min(4.0, max(1.2, 0.90 / probability)), 2)
+    return {
+        'games': games, 'wins': wins,
+        'win': offered(win_probability),
+        'lose': offered(1.0 - win_probability),
+    }
+
+
+def place_prediction_bet(group_id, user_id, user_name, target_account_id,
+                         target_nickname, prediction, stake, odds, after_match_id):
+    """Create or change one user's open bet for a tracked player's next match."""
+    now = int(time.time())
+    prediction = 1 if prediction else 0
+    stake = int(stake)
+    if stake <= 0:
+        raise ValueError('下注点数必须大于 0')
+    with conn:
+        c.execute(
+            """INSERT INTO prediction_scores(group_id,user_id,user_name,score,updated_at)
+               VALUES (?,?,?,1000,?) ON CONFLICT(group_id,user_id) DO UPDATE SET
+               user_name=excluded.user_name,updated_at=excluded.updated_at""",
+            (int(group_id), int(user_id), user_name, now),
+        )
+        row = c.execute(
+            """SELECT id,stake FROM prediction_bets
+               WHERE group_id=? AND user_id=? AND target_account_id=? AND status='open'""",
+            (int(group_id), int(user_id), int(target_account_id)),
+        ).fetchone()
+        refundable = int(row[1]) if row else 0
+        balance = c.execute(
+            "SELECT score FROM prediction_scores WHERE group_id=? AND user_id=?",
+            (int(group_id), int(user_id)),
+        ).fetchone()[0] + refundable
+        if balance < stake:
+            raise ValueError('余额不足：当前可用 {} 点'.format(balance))
+        if row:
+            c.execute(
+                """UPDATE prediction_bets
+                   SET user_name=?,target_nickname=?,prediction=?,stake=?,odds=?,
+                       after_match_id=?,updated_at=?
+                   WHERE id=?""",
+                (user_name, target_nickname, prediction, stake, float(odds),
+                 int(after_match_id), now, row[0]),
+            )
+            bet_id, changed = row[0], True
+        else:
+            c.execute(
+                """INSERT INTO prediction_bets
+                   (group_id,user_id,user_name,target_account_id,target_nickname,prediction,
+                    stake,odds,after_match_id,status,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,'open',?,?)""",
+                (int(group_id), int(user_id), user_name, int(target_account_id),
+                 target_nickname, prediction, stake, float(odds), int(after_match_id), now, now),
+            )
+            bet_id, changed = c.lastrowid, False
+        c.execute(
+            """UPDATE prediction_scores
+               SET score=?,wagered=wagered+?,returned=returned+?,updated_at=?
+               WHERE group_id=? AND user_id=?""",
+            (balance - stake, stake, refundable, now, int(group_id), int(user_id)),
+        )
+    return {'id': bet_id, 'changed': changed, 'balance': balance - stake}
+
+
+def get_open_prediction_bets(group_id, user_id):
+    rows = c.execute(
+        """SELECT id,target_account_id,target_nickname,prediction,stake,odds,
+                  after_match_id,created_at
+           FROM prediction_bets WHERE group_id=? AND user_id=? AND status='open'
+           ORDER BY created_at,id""",
+        (int(group_id), int(user_id)),
+    ).fetchall()
+    keys = ('id','target_account_id','target_nickname','prediction','stake','odds',
+            'after_match_id','created_at')
+    return [dict(zip(keys, row)) for row in rows]
+
+
+def get_prediction_score(group_id, user_id):
+    row = c.execute(
+        """SELECT user_name,score,wins,losses,wagered,returned,game_earned
+           FROM prediction_scores
+           WHERE group_id=? AND user_id=?""",
+        (int(group_id), int(user_id)),
+    ).fetchone()
+    return dict(zip(('user_name','score','wins','losses','wagered','returned','game_earned'), row)) if row else {
+        'user_name': str(user_id), 'score': 1000, 'wins': 0, 'losses': 0,
+        'wagered': 0, 'returned': 0, 'game_earned': 0,
+    }
+
+
+def get_prediction_leaderboard(group_id, limit=10):
+    rows = c.execute(
+        """SELECT user_id,user_name,score,wins,losses,wagered,returned,game_earned
+           FROM prediction_scores
+           WHERE group_id=? ORDER BY score DESC,wins DESC,updated_at ASC LIMIT ?""",
+        (int(group_id), int(limit)),
+    ).fetchall()
+    keys = ('user_id','user_name','score','wins','losses','wagered','returned','game_earned')
+    return [dict(zip(keys, row)) for row in rows]
+
+
+def settle_prediction_bets(group_id, match_id, match_start_time, match_rows):
+    """Settle eligible next-match bets once; returns a summary safe for report output."""
+    now = int(time.time())
+    settled = []
+    with conn:
+        for match_row in match_rows:
+            account_id = int(match_row['account_id'])
+            actual_won = 1 if match_row['won'] else 0
+            bets = c.execute(
+                """SELECT id,user_id,user_name,prediction,stake,odds FROM prediction_bets
+                   WHERE group_id=? AND target_account_id=? AND status='open'
+                     AND after_match_id<? AND created_at<=? ORDER BY id""",
+                (int(group_id), account_id, int(match_id), int(match_start_time)),
+            ).fetchall()
+            for bet_id, user_id, user_name, prediction, stake, odds in bets:
+                correct = int(prediction) == actual_won
+                score_row = c.execute(
+                    """SELECT score FROM prediction_scores WHERE group_id=? AND user_id=?""",
+                    (int(group_id), int(user_id)),
+                ).fetchone()
+                current_score = score_row[0] if score_row else 0
+                payout = int(round(int(stake) * float(odds))) if correct else 0
+                profit = payout - int(stake)
+                c.execute(
+                    """UPDATE prediction_scores SET user_name=?,score=score+?,
+                       wins=wins+?,losses=losses+?,returned=returned+?,updated_at=?
+                       WHERE group_id=? AND user_id=?""",
+                    (user_name, payout, 1 if correct else 0, 0 if correct else 1,
+                     payout, now, int(group_id), int(user_id)),
+                )
+                c.execute(
+                    """UPDATE prediction_bets SET status='settled',settled_match_id=?,
+                       actual_won=?,score_delta=?,settled_at=?,updated_at=?
+                       WHERE id=? AND status='open'""",
+                    (int(match_id), actual_won, profit, now, now, bet_id),
+                )
+                if c.rowcount:
+                    settled.append({
+                        'bet_id': bet_id, 'user_id': user_id, 'user_name': user_name,
+                        'target_nickname': match_row['nickname'], 'prediction': prediction,
+                        'actual_won': actual_won, 'correct': correct, 'stake': stake,
+                        'odds': odds, 'payout': payout, 'delta': profit,
+                        'score': current_score + payout,
+                    })
+    return settled
+
+
+def bind_prediction_player(group_id, user_id, user_name, account_id, nickname):
+    now = int(time.time())
+    with conn:
+        c.execute("DELETE FROM prediction_player_links WHERE group_id=? AND (user_id=? OR account_id=?)",
+                  (int(group_id), int(user_id), int(account_id)))
+        c.execute("INSERT INTO prediction_player_links VALUES (?,?,?,?,?,?)",
+                  (int(group_id), int(user_id), user_name, int(account_id), nickname, now))
+
+
+def reward_bound_players(group_id, match_id, match_rows, amount=50):
+    now = int(time.time())
+    rewards = []
+    with conn:
+        for row in match_rows:
+            link = c.execute(
+                """SELECT user_id,user_name FROM prediction_player_links
+                   WHERE group_id=? AND account_id=?""",
+                (int(group_id), int(row['account_id'])),
+            ).fetchone()
+            if not link:
+                continue
+            user_id, user_name = link
+            c.execute(
+                """INSERT OR IGNORE INTO prediction_game_rewards VALUES (?,?,?,?,?,?)""",
+                (int(group_id), int(user_id), int(row['account_id']), int(match_id), int(amount), now),
+            )
+            if not c.rowcount:
+                continue
+            c.execute(
+                """INSERT INTO prediction_scores
+                   (group_id,user_id,user_name,score,game_earned,updated_at)
+                   VALUES (?,?,?,1000+?,?,?)
+                   ON CONFLICT(group_id,user_id) DO UPDATE SET
+                     user_name=excluded.user_name,score=prediction_scores.score+?,
+                     game_earned=prediction_scores.game_earned+?,updated_at=excluded.updated_at""",
+                (int(group_id), int(user_id), user_name, int(amount), int(amount), now,
+                 int(amount), int(amount)),
+            )
+            rewards.append({'user_id': user_id, 'user_name': user_name, 'amount': int(amount)})
+    return rewards
 
 
 def get_match_outbox_status(match_id):

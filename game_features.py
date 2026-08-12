@@ -8,6 +8,7 @@ import config
 from DBOper import (
     get_combo_name, get_combo_record, get_match_stats, get_player_alias,
     get_player_streak, get_rivalry, get_today_stats, save_match_stats,
+    reward_bound_players, settle_prediction_bets,
 )
 
 
@@ -26,6 +27,21 @@ def display_name(account_id, nickname, match_id):
 def persist_and_summarize(match_id, start_time, rows):
     save_match_stats(match_id, config.QQ_GROUP_ID, start_time, rows)
     lines = []
+    settled = settle_prediction_bets(config.QQ_GROUP_ID, match_id, start_time, rows)
+    rewards = reward_bound_players(config.QQ_GROUP_ID, match_id, rows)
+    if settled:
+        correct = sum(1 for item in settled if item['correct'])
+        lines.extend(['', '🎲 竞猜结算｜{} 人参与，{} 人猜中'.format(len(settled), correct)])
+        for item in settled[:8]:
+            sign = '+' if item['delta'] >= 0 else ''
+            lines.append('{} {} {}{}（{}分）'.format(
+                '✅' if item['correct'] else '❌', item['user_name'], sign,
+                item['delta'], item['score']))
+        if len(settled) > 8:
+            lines.append('另有 {} 人已结算。'.format(len(settled) - 8))
+    if rewards:
+        lines.extend(['', '🎮 完赛奖励'])
+        lines.extend('• {} +{} 点'.format(item['user_name'], item['amount']) for item in rewards)
     if len(rows) >= 2:
         lines.extend(_awards(rows))
         lines.extend(_combo_and_rivalry(rows))
