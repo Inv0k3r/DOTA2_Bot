@@ -7,7 +7,7 @@ import time
 import config
 from player import PLAYER_LIST, Player
 from DBOper import get_enabled_players, is_player_stored, insert_info
-from common import steam_id_convert_32_to_64, update_and_send_message_DOTA2, update_and_send_gaming_status
+from common import refresh_match_poll_priorities, steam_id_convert_32_to_64, update_and_send_message_DOTA2
 from event_receiver import process_pending_events, start_event_server
 import DOTA2
 
@@ -36,8 +36,7 @@ def init():
 
 
 def update(player_num: int):
-    if config.ENABLE_STEAM_WATCHER:
-        update_and_send_gaming_status()
+    refresh_match_poll_priorities()
     update_and_send_message_DOTA2()
     # dota每日请求限制100,000次
     # 每个人假设每次更新都需要请求两次

@@ -6,6 +6,17 @@ from player import player
 
 
 class Dota2Test(unittest.TestCase):
+
+    @patch('DOTA2._request_json')
+    def test_recent_matches_use_steam_before_opendota(self, request_json):
+        request_json.return_value = {
+            'result': {'matches': [{'match_id': 102}, {'match_id': 101}]}
+        }
+
+        self.assertEqual(DOTA2.get_recent_match_ids_by_short_steamID(42), [102, 101])
+
+        request_json.assert_called_once()
+        self.assertEqual(request_json.call_args.kwargs['provider'], 'Steam match history')
     def test_match_details_fall_back_to_steam(self):
         expected = {"match_id": 123, "players": []}
         with patch.object(

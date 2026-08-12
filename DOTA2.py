@@ -6,7 +6,14 @@ from player import Player
 import random
 import time
 from typing import Dict, List
-from config import API_KEY, ENABLE_URL, DEFAULT_NAME_ONLY, OPENDOTA_API_URL, REQUEST_TIMEOUT
+from config import (
+    API_KEY,
+    DEFAULT_NAME_ONLY,
+    ENABLE_URL,
+    OPENDOTA_API_URL,
+    OPENDOTA_RATE_LIMIT_BACKOFF,
+    REQUEST_TIMEOUT,
+)
 
 
 # 异常处理
@@ -17,15 +24,28 @@ class DOTA2HTTPError(Exception):
 _HERO_NAMES_CACHE = {}
 _HERO_NAMES_LOADED = False
 _CONSTANTS_CACHE = {}
+_opendota_retry_at = 0.0
 
 
 def _request_json(url: str, params=None, provider="API"):
+    global _opendota_retry_at
+    is_opendota = provider.startswith("OpenDota")
+    if is_opendota and time.monotonic() < _opendota_retry_at:
+        remaining = max(1, int(_opendota_retry_at - time.monotonic()))
+        raise DOTA2HTTPError("OpenDota rate limit cooldown ({}s remaining)".format(remaining))
     try:
         response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         return response.json()
     except requests.HTTPError as exc:
         status_code = exc.response.status_code if exc.response is not None else "unknown"
+        if is_opendota and status_code == 429:
+            retry_after = exc.response.headers.get("Retry-After", "")
+            try:
+                delay = max(float(retry_after), OPENDOTA_RATE_LIMIT_BACKOFF)
+            except (TypeError, ValueError):
+                delay = OPENDOTA_RATE_LIMIT_BACKOFF
+            _opendota_retry_at = time.monotonic() + delay
         raise DOTA2HTTPError(
             "{} returned HTTP {}".format(provider, status_code)
         ) from exc
@@ -62,33 +82,38 @@ def get_last_match_id_by_short_steamID(short_steamID: int) -> int:
     return match_id
 
 
-def get_recent_match_ids_by_short_steamID(short_steamID: int, limit: int = 20) -> List[int]:
-    """Return recent public matches newest first, preferring OpenDota history."""
-    errors = []
-    try:
-        matches = _request_json(
-            '{}/players/{}/recentMatches'.format(OPENDOTA_API_URL, short_steamID),
-            provider="OpenDota recent matches",
-        )
-        if isinstance(matches, list):
-            ids = [int(item['match_id']) for item in matches if item.get('match_id')]
-            if ids:
-                return ids[:limit]
-    except DOTA2HTTPError as exc:
-        errors.append(str(exc))
+def get_active_dota_account_ids(players: List[Player]) -> List[int]:
+    """Return tracked account IDs whose public Steam status currently shows DOTA 2."""
+    if not players:
+        return []
+    summaries = _request_json(
+        'https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/',
+        params={
+            'key': API_KEY,
+            'steamids': ','.join(str(player.long_steamID) for player in players),
+        },
+        provider="Steam player summaries",
+    )
+    active = []
+    for summary in summaries.get('response', {}).get('players', []):
+        game_id = str(summary.get('gameid', ''))
+        game_name = summary.get('gameextrainfo', '') or ''
+        if game_id == '570' or 'dota 2' in game_name.lower():
+            active.append(int(summary['steamid']) - 76561197960265728)
+    return active
 
-    try:
-        result = _request_json(
-            'https://api.steampowered.com/IDOTA2Match_570/GetMatchHistory/v001/',
-            params={'key': API_KEY, 'account_id': short_steamID, 'matches_requested': limit},
-            provider="Steam match history",
-        )
-        ids = [int(item['match_id']) for item in result.get('result', {}).get('matches', [])]
-        if ids:
-            return ids
-    except DOTA2HTTPError as exc:
-        errors.append(str(exc))
-    raise DOTA2HTTPError('; '.join(errors) or 'match history contains no visible match')
+
+def get_recent_match_ids_by_short_steamID(short_steamID: int, limit: int = 20) -> List[int]:
+    """Return recent matches newest first from the keyed Steam history API."""
+    result = _request_json(
+        'https://api.steampowered.com/IDOTA2Match_570/GetMatchHistory/v001/',
+        params={'key': API_KEY, 'account_id': short_steamID, 'matches_requested': limit},
+        provider="Steam match history",
+    )
+    ids = [int(item['match_id']) for item in result.get('result', {}).get('matches', [])]
+    if not ids:
+        raise DOTA2HTTPError('Steam match history contains no visible match')
+    return ids
 
 
 def _get_match_detail_from_opendota(match_id: int) -> Dict:

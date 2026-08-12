@@ -13,8 +13,13 @@ OPENDOTA_API_URL = os.getenv("OPENDOTA_API_URL", "https://api.opendota.com/api")
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "60"))
 POLL_WORKERS = int(os.getenv("POLL_WORKERS", "6"))
+STEAM_STATUS_INTERVAL = float(os.getenv("STEAM_STATUS_INTERVAL", "60"))
+ACTIVE_MATCH_POLL_INTERVAL = float(os.getenv("ACTIVE_MATCH_POLL_INTERVAL", "60"))
+INACTIVE_MATCH_POLL_INTERVAL = float(os.getenv("INACTIVE_MATCH_POLL_INTERVAL", "900"))
+ACTIVE_MATCH_GRACE = float(os.getenv("ACTIVE_MATCH_GRACE", "10800"))
 ERROR_BACKOFF_BASE = float(os.getenv("ERROR_BACKOFF_BASE", "60"))
 ERROR_BACKOFF_MAX = float(os.getenv("ERROR_BACKOFF_MAX", "1800"))
+OPENDOTA_RATE_LIMIT_BACKOFF = float(os.getenv("OPENDOTA_RATE_LIMIT_BACKOFF", "300"))
 EVENT_HOST = os.getenv("EVENT_HOST", "127.0.0.1")
 EVENT_PORT = int(os.getenv("EVENT_PORT", "3010"))
 EVENT_SECRET = os.getenv("EVENT_SECRET", "")
@@ -37,6 +42,3 @@ ENABLE_URL = False
 
 # 是否仅使用英雄默认名字
 DEFAULT_NAME_ONLY = False
-
-# 是否启用Steam游戏状态监视
-ENABLE_STEAM_WATCHER = os.getenv("ENABLE_STEAM_WATCHER", "false").lower() in ("1", "true", "yes")

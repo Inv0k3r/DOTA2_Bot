@@ -54,7 +54,6 @@ export NAPCAT_HTTP_URL="http://127.0.0.1:3000"
 export NAPCAT_ACCESS_TOKEN="NapCat HTTP 服务端 Token"
 export PLAYER_LIST_JSON='[["玩家昵称",90045009]]'
 export EVENT_SECRET="一段足够长的随机字符串"
-export ENABLE_STEAM_WATCHER="true"
 ```
 
 PowerShell：
@@ -66,7 +65,6 @@ $env:NAPCAT_HTTP_URL = "http://127.0.0.1:3000"
 $env:NAPCAT_ACCESS_TOKEN = "NapCat HTTP 服务端 Token"
 $env:PLAYER_LIST_JSON = '[["玩家昵称",90045009]]'
 $env:EVENT_SECRET = "一段足够长的随机字符串"
-$env:ENABLE_STEAM_WATCHER = "true"
 ```
 
 也可以直接修改 `config.py` 中的 `DEFAULT_PLAYER_LIST`。每项格式为：
@@ -74,8 +72,6 @@ $env:ENABLE_STEAM_WATCHER = "true"
 ```python
 ["显示昵称", Steam 32位 Account ID]
 ```
-
-`ENABLE_STEAM_WATCHER=true` 会在至少两名监控玩家同时进入 DOTA2 时发送开黑玄学预测；不会播报单人的启动和退出流水账。
 
 ## 启动
 
@@ -193,9 +189,13 @@ python manage.py report 90045009 "示例玩家" --match-id 1234567890 --send
 
 - `POLL_INTERVAL`：基础轮询间隔，默认 60 秒。
 - `POLL_WORKERS`：最大并发请求数，默认 6。
+- `STEAM_STATUS_INTERVAL`：批量检查玩家 Steam 在线状态的间隔，默认 60 秒。
+- `ACTIVE_MATCH_POLL_INTERVAL`：正在运行 DOTA2 的玩家比赛历史轮询间隔，默认 60 秒。
+- `INACTIVE_MATCH_POLL_INTERVAL`：非活跃玩家比赛历史兜底轮询间隔，默认 900 秒。
+- `ACTIVE_MATCH_GRACE`：玩家离开 DOTA2 后保持高频轮询的时间，默认 10800 秒。
 - `ERROR_BACKOFF_BASE`：首次失败退避秒数，默认 60。
 - `ERROR_BACKOFF_MAX`：最长退避秒数，默认 1800。
-- `ENABLE_STEAM_WATCHER`：是否启用多人上线预测，默认关闭。
+- `OPENDOTA_RATE_LIMIT_BACKOFF`：OpenDota 返回限流响应后的全局冷却秒数，默认 300。
 
 ## 安全提示
 

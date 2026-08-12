@@ -28,6 +28,10 @@ class CommonTest(unittest.TestCase):
         PLAYER_LIST.clear()
         common._poll_failures.clear()
         common._next_poll_at.clear()
+        common._match_detail_failures.clear()
+        common._next_match_detail_at.clear()
+        common._priority_poll_until.clear()
+        common._next_status_refresh_at = 0
         self.tracked = Player("测试玩家", 42, 76561197960265770, 100)
         PLAYER_LIST.append(self.tracked)
 
@@ -103,6 +107,25 @@ class CommonTest(unittest.TestCase):
 
         enqueue.assert_not_called()
         self.assertEqual(self.tracked.last_DOTA2_match_ID, 100)
+        self.assertEqual(common._match_detail_failures[101], 1)
+        self.assertGreater(common._next_match_detail_at[101], 0)
+
+    @patch("common.get_pending_matches", return_value=[])
+    @patch("common.enqueue_match")
+    @patch("common.get_match_outbox", return_value=None)
+    @patch("common.DOTA2.generate_match_message")
+    @patch("common.update_DOTA2")
+    def test_generation_respects_match_detail_backoff(
+        self, update_dota, generate, get_outbox, enqueue, get_pending
+    ):
+        update_dota.return_value = {101: [self.tracked]}
+        common._next_match_detail_at[101] = float("inf")
+
+        common.update_and_send_message_DOTA2()
+
+        generate.assert_not_called()
+        get_outbox.assert_not_called()
+        enqueue.assert_not_called()
 
     @patch("common.mark_match_failed")
     @patch("common.mark_match_attempt")
@@ -131,6 +154,25 @@ class CommonTest(unittest.TestCase):
         detected = common.update_DOTA2()
         self.assertEqual(list(detected), [101, 102, 103])
         self.assertEqual(detected[101], [self.tracked])
+
+    @patch('common.DOTA2.get_active_dota_account_ids', return_value=[42])
+    @patch('common.time.monotonic', return_value=100)
+    def test_active_player_is_prioritized_by_batched_status(self, _monotonic, _active):
+        common._next_poll_at[42] = 999
+
+        common.refresh_match_poll_priorities()
+
+        self.assertEqual(common._next_poll_at[42], 100)
+        self.assertGreater(common._priority_poll_until[42], 100)
+
+    @patch('common.time.monotonic', return_value=100)
+    def test_inactive_player_uses_slow_poll_interval(self, _monotonic):
+        common._record_poll_success(self.tracked, now=100)
+
+        self.assertEqual(
+            common._next_poll_at[42],
+            100 + common.config.INACTIVE_MATCH_POLL_INTERVAL,
+        )
 
 
 if __name__ == "__main__":

@@ -19,12 +19,15 @@ from DBOper import (
 from message_sender import MessageSendError
 from message_sender import message as send
 from player import PLAYER_LIST, Player
-from steam import gaming_status_watcher
 
 logger = logging.getLogger(__name__)
 
 _poll_failures = {}
 _next_poll_at = {}
+_match_detail_failures = {}
+_next_match_detail_at = {}
+_priority_poll_until = {}
+_next_status_refresh_at = 0.0
 
 
 def steam_id_convert_32_to_64(short_steamID: int) -> int:
@@ -57,9 +60,48 @@ def _record_poll_failure(tracked_player: Player, exc: Exception):
     )
 
 
-def _record_poll_success(tracked_player: Player):
+def _record_poll_success(tracked_player: Player, now=None):
     _poll_failures.pop(tracked_player.short_steamID, None)
-    _next_poll_at.pop(tracked_player.short_steamID, None)
+    now = time.monotonic() if now is None else now
+    interval = (
+        config.ACTIVE_MATCH_POLL_INTERVAL
+        if now < _priority_poll_until.get(tracked_player.short_steamID, 0)
+        else config.INACTIVE_MATCH_POLL_INTERVAL
+    )
+    _next_poll_at[tracked_player.short_steamID] = now + interval
+
+
+def refresh_match_poll_priorities():
+    """Use one batched Steam status call to prioritize likely-active players."""
+    global _next_status_refresh_at
+    now = time.monotonic()
+    if now < _next_status_refresh_at:
+        return
+    _next_status_refresh_at = now + config.STEAM_STATUS_INTERVAL
+    try:
+        active_ids = DOTA2.get_active_dota_account_ids(PLAYER_LIST)
+    except DOTA2.DOTA2HTTPError as exc:
+        logger.warning("Steam 在线状态批量检查失败，将按原计划轮询: %s", exc)
+        return
+    for account_id in active_ids:
+        _priority_poll_until[account_id] = now + config.ACTIVE_MATCH_GRACE
+        _next_poll_at[account_id] = min(_next_poll_at.get(account_id, now), now)
+
+
+def _record_match_detail_failure(match_id: int):
+    failures = _match_detail_failures.get(match_id, 0) + 1
+    _match_detail_failures[match_id] = failures
+    delay = min(
+        config.ERROR_BACKOFF_MAX,
+        config.ERROR_BACKOFF_BASE * (2 ** min(failures - 1, 5)),
+    )
+    _next_match_detail_at[match_id] = time.monotonic() + delay
+    return failures, delay
+
+
+def _record_match_detail_success(match_id: int):
+    _match_detail_failures.pop(match_id, None)
+    _next_match_detail_at.pop(match_id, None)
 
 
 def update_DOTA2() -> Dict:
@@ -88,7 +130,7 @@ def update_DOTA2() -> Dict:
                 _record_poll_failure(tracked_player, exc)
                 continue
 
-            _record_poll_success(tracked_player)
+            _record_poll_success(tracked_player, now=time.monotonic())
             try:
                 cursor_index = match_ids.index(int(tracked_player.last_DOTA2_match_ID))
                 unseen = match_ids[:cursor_index]
@@ -120,6 +162,8 @@ def _sync_player_objects(player_ids, match_id):
 
 def _queue_detected_matches(detected_matches):
     for match_id, detected_players in detected_matches.items():
+        if time.monotonic() < _next_match_detail_at.get(match_id, 0):
+            continue
         entry = get_match_outbox(match_id)
         detected_ids = [player.short_steamID for player in detected_players]
 
@@ -140,10 +184,19 @@ def _queue_detected_matches(detected_matches):
         try:
             payload = DOTA2.generate_match_message(match_id, report_players)
             enqueue_match(match_id, payload, all_ids)
+            _record_match_detail_success(match_id)
             logger.info("比赛 %s 已进入待发队列，玩家数: %s", match_id, len(all_ids))
         except DOTA2.DOTA2HTTPError as exc:
-            logger.warning("比赛 %s 详情尚未就绪，下轮重试: %s", match_id, exc)
+            failures, delay = _record_match_detail_failure(match_id)
+            logger.warning(
+                "比赛 %s 详情尚未就绪，第 %s 次；%.0f 秒后重试: %s",
+                match_id,
+                failures,
+                delay,
+                exc,
+            )
         except Exception:
+            failures, delay = _record_match_detail_failure(match_id)
             logger.exception("比赛 %s 战报生成异常，下轮重试", match_id)
 
 
@@ -172,12 +225,3 @@ def update_and_send_message_DOTA2():
     detected_matches = update_DOTA2()
     _queue_detected_matches(detected_matches)
     _deliver_pending_matches()
-
-
-def update_and_send_gaming_status():
-    try:
-        msg = gaming_status_watcher()
-        if isinstance(msg, str):
-            send(msg)
-    except Exception:
-        logger.exception("Steam 游戏状态监控失败，将在下轮重试")
