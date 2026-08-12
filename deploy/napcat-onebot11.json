@@ -1,0 +1,33 @@
+{
+  "network": {
+    "httpServers": [
+      {
+        "name": "dota2-bot",
+        "enable": true,
+        "port": 3000,
+        "host": "127.0.0.1",
+        "enableCors": false,
+        "enableWebsocket": false,
+        "messagePostFormat": "array",
+        "token": "__ONEBOT_TOKEN__",
+        "debug": false
+      }
+    ],
+    "httpClients": [
+      {
+        "name": "dota2-bot-events",
+        "enable": true,
+        "url": "http://127.0.0.1:3010/onebot/__EVENT_SECRET__",
+        "messagePostFormat": "array",
+        "reportSelfMessage": false,
+        "token": "",
+        "debug": false
+      }
+    ],
+    "websocketServers": [],
+    "websocketClients": []
+  },
+  "musicSignUrl": "",
+  "enableLocalFile2Url": false,
+  "parseMultMsg": false
+}

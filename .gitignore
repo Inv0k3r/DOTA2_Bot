@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.env
+napcat-login.png
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3

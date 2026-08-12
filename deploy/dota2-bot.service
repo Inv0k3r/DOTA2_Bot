@@ -1,0 +1,23 @@
+[Unit]
+Description=DOTA2 match reporter for NapCatQQ
+After=network-online.target napcat.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dota2bot
+Group=dota2bot
+WorkingDirectory=/opt/dota2-bot
+EnvironmentFile=/etc/dota2-bot.env
+ExecStart=/opt/dota2-bot/.venv/bin/python /opt/dota2-bot/run.py
+Restart=on-failure
+RestartSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/dota2-bot
+
+[Install]
+WantedBy=multi-user.target

@@ -1,44 +1,38 @@
 #!/usr/bin/python
 # -*- coding: UTF-8 -*-
+import logging
+import random
 import time
-import json
+
 import config
-from player import PLAYER_LIST, player
-from DBOper import is_player_stored, insert_info, update_DOTA2_match_ID
+from player import PLAYER_LIST, Player
+from DBOper import get_enabled_players, is_player_stored, insert_info
 from common import steam_id_convert_32_to_64, update_and_send_message_DOTA2, update_and_send_gaming_status
+from event_receiver import process_pending_events, start_event_server
 import DOTA2
-import message_sender
+
+logger = logging.getLogger(__name__)
 
 
 def init():
-    # 读取配置文件
-    player_list = config.PLAYER_LIST
-    # 读取玩家信息
-    for i in player_list:
+    # 环境变量只负责导入新增玩家，之后由数据库保存启用状态。
+    for i in config.PLAYER_LIST:
         nickname = i[0]
         short_steamID = i[1]
-        print("{}信息读取完毕, ID:{}".format(nickname, short_steamID))
+        logger.info("读取玩家 %s，Account ID: %s", nickname, short_steamID)
         long_steamID = steam_id_convert_32_to_64(short_steamID)
-
-        try:
-            last_DOTA2_match_ID = DOTA2.get_last_match_id_by_short_steamID(short_steamID)
-        except DOTA2.DOTA2HTTPError:
-            last_DOTA2_match_ID = "-1"
 
         # 如果数据库中没有这个人的信息, 则进行数据库插入
         if not is_player_stored(short_steamID):
-            # 插入数据库
+            try:
+                last_DOTA2_match_ID = DOTA2.get_last_match_id_by_short_steamID(short_steamID)
+            except DOTA2.DOTA2HTTPError as exc:
+                logger.warning("初始化 %s 的比赛状态失败: %s", nickname, exc)
+                last_DOTA2_match_ID = -1
             insert_info(short_steamID, long_steamID, nickname, last_DOTA2_match_ID)
-        # 如果有这个人的信息则更新其最新的比赛信息
-        else:
-            update_DOTA2_match_ID(short_steamID, last_DOTA2_match_ID)
-        # 新建一个玩家对象, 放入玩家列表
-        temp_player = player(short_steamID=short_steamID,
-                             long_steamID=long_steamID,
-                             nickname=nickname,
-                             last_DOTA2_match_ID=last_DOTA2_match_ID)
-
-        PLAYER_LIST.append(temp_player)
+    PLAYER_LIST.clear()
+    for row in get_enabled_players():
+        PLAYER_LIST.append(Player(**row))
 
 
 def update(player_num: int):
@@ -50,19 +44,29 @@ def update(player_num: int):
     # 所以请求间隔可以设置为 (24 * 60 * 60 / (100000 / (2 * player_num)))
     # 10个人的情况下, 会17秒更新一次信息
     # 但是其实每分钟更新一次即可保证及时
-    if player_num >= 30:
-        time.sleep((24 * 60 * 60) / (100000 / (2 * player_num)))
-    else:
-        time.sleep(60)
+    quota_interval = (24 * 60 * 60) / (100000 / (2 * player_num))
+    interval = max(config.POLL_INTERVAL, quota_interval if player_num >= 30 else 0)
+    # 等待期间每秒处理一次群命令，避免管理操作卡一个轮询周期。
+    deadline = time.monotonic() + interval * random.uniform(0.9, 1.1)
+    while time.monotonic() < deadline:
+        process_pending_events()
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
 
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     if init() != -1:
-        print("初始化完成, 开始更新比赛信息")
+        start_event_server()
+        logger.info("初始化完成，开始更新比赛信息")
         while True:
             player_num = len(PLAYER_LIST)
             if player_num == 0:
-                return
+                process_pending_events()
+                time.sleep(1)
+                continue
             update(player_num=player_num)
 
 

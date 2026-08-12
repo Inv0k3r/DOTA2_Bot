@@ -1,0 +1,18 @@
+[Unit]
+Description=NapCatQQ Shell
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/napcat-shell
+Environment=NAPCAT_BOOTMAIN=/opt/napcat-shell
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1280x720x24" /usr/bin/env LD_PRELOAD=/opt/napcat-shell/libnapcat_launcher.so /usr/bin/qq --no-sandbox
+Restart=on-failure
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

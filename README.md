@@ -1,54 +1,206 @@
-# DOTA2的处刑BOT
+# DOTA2 处刑 BOT（NapCatQQ 版）
 
-## 介绍
-在群友启动或退出游戏时向群里播报（可选）
+监控指定玩家的 DOTA2 比赛和 Steam 游戏状态，并通过 NapCatQQ 向 QQ 群发送战报。
 
-（发行Steam API key的账号可能需要有监视对象的好友，否则获取不到游戏状态）
+## 工作方式
 
-在群友打完一把游戏后, bot会向群里更新这局比赛的数据
+1. 通过 OpenDota/Steam 查询玩家最近 20 场比赛，按顺序补齐游标后的全部新对局。
+2. 发现新的比赛 ID 后通过 OpenDota 获取比赛详情；OpenDota 不可用时回退 Valve。
+3. 通过 NapCatQQ 的 OneBot 11 HTTP API `send_group_msg` 发送群消息。
+4. 使用本地 SQLite 数据库记录玩家状态、可靠消息队列和互动统计，避免漏发或重复播报。
 
-DOTA2的数据来自于V社的官方API, 每日请求数限制100,000次
+新比赛会先写入本地待发队列。只有 NapCatQQ 确认发送成功后，程序才会推进玩家比赛位置；网络失败会自动退避重试。
 
-YYGQ的文来自于[dota2_watcher](https://github.com/unilink233/dota2_watcher)
+## 环境要求
 
-有任何建议可以发issue, 随缘更新
+- Python 3.8+
+- 已登录 QQ 的 [NapCatQQ](https://github.com/NapNeko/NapCatQQ)
+- Steam Web API Key
 
-**Windows下可以按照安装指南下载Windows版本的MiraiOK**
+OpenDota 的公开 API 无需 Key。本项目只在发现新比赛时请求比赛详情，不会用它轮询玩家状态。
 
-**我这两天找了一下没有合适的免费开源微信机器人, 所以可能不会有微信版本**
+安装 Python 依赖：
 
-**一键脚本目前可能不太好用, 建议按照安装指南使用, 近期会发布一个更易于操作的版本一键脚本**
+```bash
+python -m pip install -r requirements.txt
+```
 
-## 一键脚本
+## 配置 NapCatQQ
 
-- 修改`config.py`来配置bot
+进入 NapCatQQ WebUI，在“网络配置”中新建并启用一个 **HTTP 服务端**：
 
-- `chmod +x go.sh`
+- Host：仅本机使用时建议 `127.0.0.1`
+- Port：例如 `3000`
+- Token：建议设置一个随机值，公网环境必须设置
 
-- `bash go.sh`
+注意：这里使用的是 OneBot HTTP 服务端端口，不是默认的 WebUI 端口 `6099`。
 
-## 安装指南
+如需使用群内监控管理，再新建一个 **HTTP 客户端**用于事件上报：
 
-- 下载对应版本的[miraiOK](https://github.com/LXY1226/MiraiOK), 有hxd说下不动, 我传了个Linux64版本的[度盘](https://pan.baidu.com/s/1bLYwWWHCcgmnLHoofXTHxQ) 提取码: 5trx 
+- URL：`http://127.0.0.1:3010/onebot/<EVENT_SECRET>`
+- 消息格式：`array`
+- 上报自身消息：关闭
 
-- 运行一下miraiOK, 然后关闭, 会自动生成一个`plugins`文件夹
+事件接收器默认只监听回环地址，并校验 URL 中的随机 `EVENT_SECRET`。
 
-- 把[mirai-http-api](https://github.com/project-mirai/mirai-api-http)里的release的jar扔进plugins文件夹
+## 配置机器人
 
-- 通过`screen -S bot && ./miraiOK_linux-amd64`启动miraiOK, 登陆你的BOT账号, 这一步可能有一些登陆上的问题, 可以自行`screen -r bot`上去查看
+推荐使用环境变量保存密钥：
 
-- 在[这里](http://steamcommunity.com/dev/apikey)申请你的steam API key, 修改`config.py`中的`api_key`
+```bash
+export STEAM_API_KEY="你的 Steam API Key"
+export QQ_GROUP_ID="目标群号"
+export NAPCAT_HTTP_URL="http://127.0.0.1:3000"
+export NAPCAT_ACCESS_TOKEN="NapCat HTTP 服务端 Token"
+export PLAYER_LIST_JSON='[["玩家昵称",90045009]]'
+export EVENT_SECRET="一段足够长的随机字符串"
+export ENABLE_STEAM_WATCHER="true"
+```
 
-- 安装requests模块和json模块: `pip install requests,json`
+PowerShell：
 
-- 修改config.py来配置bot
+```powershell
+$env:STEAM_API_KEY = "你的 Steam API Key"
+$env:QQ_GROUP_ID = "目标群号"
+$env:NAPCAT_HTTP_URL = "http://127.0.0.1:3000"
+$env:NAPCAT_ACCESS_TOKEN = "NapCat HTTP 服务端 Token"
+$env:PLAYER_LIST_JSON = '[["玩家昵称",90045009]]'
+$env:EVENT_SECRET = "一段足够长的随机字符串"
+$env:ENABLE_STEAM_WATCHER = "true"
+```
 
-- 通过screen来后台运行: `screen -S dota_bot`, Windows可以直接运行miraiok
+也可以直接修改 `config.py` 中的 `DEFAULT_PLAYER_LIST`。每项格式为：
 
-- 运行`run.py`脚本来启动BOT: `python3 run.py`
+```python
+["显示昵称", Steam 32位 Account ID]
+```
 
-## 后续计划
+`ENABLE_STEAM_WATCHER=true` 会在至少两名监控玩家同时进入 DOTA2 时发送开黑玄学预测；不会播报单人的启动和退出流水账。
 
-- [ ] 丰富YYGQ内容(大家可以直接提交, 我会合并分支)
+## 启动
 
-- [ ] 发布release
+确保 NapCatQQ 已登录且 HTTP 服务端已启用，然后运行：
+
+```bash
+python run.py
+```
+
+轮询默认使用最多 6 个并发请求。连续失败的玩家会从 1 分钟开始指数退避，最长 30 分钟，避免私密账号持续消耗请求额度。
+
+Linux 也可以使用：
+
+```bash
+bash go.sh
+```
+
+## 测试 NapCat 连接
+
+可先用下面的请求验证 NapCatQQ 配置。设置了 Token 时需保留 `Authorization` 请求头：
+
+```bash
+curl -X POST http://127.0.0.1:3000/send_group_msg \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer 你的Token" \
+  -d '{"group_id":123456789,"message":"DOTA2 BOT 连接测试"}'
+```
+
+成功响应应包含 `"status":"ok"` 和 `"retcode":0`。
+
+## 管理命令
+
+以下命令需要使用和服务相同的环境变量：
+
+```bash
+# 查看 NapCat、玩家数量和待发队列
+python manage.py status
+
+# 查看监控名单
+python manage.py players
+
+# 发送测试消息
+python manage.py test-message "DOTA2 BOT 测试"
+
+# 预览指定玩家最新一场战报
+python manage.py report 90045009 "示例玩家"
+
+# 生成并发送指定比赛
+python manage.py report 90045009 "示例玩家" --match-id 1234567890 --send
+```
+
+### 群内管理监控名单
+
+群主、群管理员以及 `ADMIN_QQ_IDS` 中配置的 QQ 可以执行：
+
+```text
+添加监控 <Steam个人主页、SteamID64或Account ID> <群内昵称>
+删除监控 <群内昵称或Steam ID>
+监控列表
+```
+
+例如：
+
+```text
+添加监控 https://steamcommunity.com/profiles/76561198000000000 示例玩家
+删除监控 示例玩家
+```
+
+名单变更即时生效并持久化到数据库，不需要重启服务。`PLAYER_LIST_JSON`
+只用于导入尚不存在的新玩家，不会重新启用已经在群内删除的玩家。
+
+### 群内自定义锐评
+
+必须先 `@机器人`，群主、管理员或 `ADMIN_QQ_IDS` 白名单用户可以使用：
+
+```text
+@bot 加锐评 死亡>=10 60% 这死亡数是在泉水和战场之间跑滴滴？
+@bot 加锐评 死亡>=10 KDA<1 80% 纯正人形经验包。
+@bot 锐评列表
+@bot 停锐评 12
+@bot 开锐评 12
+@bot 删锐评 12
+```
+
+任何群成员都可以发送 `@bot 帮助` 查看精简命令说明。
+
+其它娱乐命令：
+
+```text
+@bot 加外号 玩家甲 泉水质检员 40%
+@bot 删外号 玩家甲
+@bot 组合名 玩家甲+玩家乙+玩家丙 泉水旅游团
+@bot 今日红黑榜
+@bot 谁在连败
+```
+
+回复一条机器人战报后可以发送 `@bot 鞭尸 [玩家]`、`@bot 再骂一句`，或用
+`@bot 锐评太轻`、`@bot 锐评合适`、`@bot 锐评过头`反馈火候。
+
+支持字段：`击杀`、`死亡`、`助攻`、`KDA`、`GPM`、`XPM`、`补刀`、
+`伤害`、`伤害占比`、`参战率`、`死亡占比`、`胜负`。多个条件之间表示“并且”；
+胜负写作 `胜负=胜` 或 `胜负=负`。自定义规则命中后优先于内置锐评，同一局的概率结果固定。
+
+## 战报内容
+
+- 同一场比赛中的监控玩家合并为一条消息。
+- 同阵营多人会标记为“组队开黑”，不同阵营会标记为“同局撞车”。
+- 分别展示胜负、英雄、K/D/A、GPM/XPM、补刀、伤害占比和参战率。
+- 根据稳定的数据规则生成趣味评价，不调用大模型。
+- 多人对局追加赛后奖项、组合战绩、宿敌比分和连胜/连败信息。
+- 回复战报可鞭尸、补充锐评或评价锐评火候。
+- 外号、自定义组合名、自定义锐评和统计数据均持久化在 SQLite。
+
+可通过环境变量调整轮询：
+
+- `POLL_INTERVAL`：基础轮询间隔，默认 60 秒。
+- `POLL_WORKERS`：最大并发请求数，默认 6。
+- `ERROR_BACKOFF_BASE`：首次失败退避秒数，默认 60。
+- `ERROR_BACKOFF_MAX`：最长退避秒数，默认 1800。
+- `ENABLE_STEAM_WATCHER`：是否启用多人上线预测，默认关闭。
+
+## 安全提示
+
+- 不要把 Steam API Key 或 NapCat Token 提交到 Git。
+- 不要提交运行中的 SQLite 数据库；仓库已默认忽略 `*.db`、`*.sqlite*`。
+- 生产环境建议用 `deploy/dota2-bot.env.example` 复制出独立环境文件，并设置为 `600` 权限。
+- 不需要公网访问时，让 NapCat HTTP 服务端只监听本机。
+- 如果机器人和 NapCat 位于不同机器，请使用防火墙限制来源地址并启用 Token。

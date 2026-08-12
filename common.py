@@ -1,11 +1,31 @@
 #!/usr/bin/python
 # -*- coding: UTF-8 -*-
+import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict
+
+import config
 import DOTA2
-from DBOper import update_DOTA2_match_ID
-from player import PLAYER_LIST
-from typing import List, Dict
-from steam import gaming_status_watcher
+from DBOper import (
+    acknowledge_sent_match,
+    enqueue_match,
+    get_match_outbox,
+    get_pending_matches,
+    mark_match_attempt,
+    mark_match_failed,
+    mark_match_sent,
+)
+from message_sender import MessageSendError
 from message_sender import message as send
+from player import PLAYER_LIST, Player
+from steam import gaming_status_watcher
+
+logger = logging.getLogger(__name__)
+
+_poll_failures = {}
+_next_poll_at = {}
+
 
 def steam_id_convert_32_to_64(short_steamID: int) -> int:
     return short_steamID + 76561197960265728
@@ -15,42 +35,149 @@ def steam_id_convert_64_to_32(long_steamID: int) -> int:
     return long_steamID - 76561197960265728
 
 
-# 返回一个最新比赛变化过的字典
-# 格式: { match_id1: [player1, player2, player3], match_id2: [player1, player2]}
-def update_DOTA2() -> Dict:
-    result = {}
-    for i in PLAYER_LIST:
-        try:
-            match_id = DOTA2.get_last_match_id_by_short_steamID(i.short_steamID)
-        except DOTA2.DOTA2HTTPError:
-            continue
-        if match_id != i.last_DOTA2_match_ID:
+def _fetch_latest_match(tracked_player: Player):
+    return DOTA2.get_recent_match_ids_by_short_steamID(tracked_player.short_steamID)
 
-            if result.get(match_id, 0) != 0:
-                result[match_id].append(i)
-            else:
-                result.update({match_id: [i]})
-            # 更新数据库的last_DOTA2_match_id字段
-            update_DOTA2_match_ID(i.short_steamID, match_id)
-            # 更新列表
-            i.last_DOTA2_match_ID = match_id
+
+def _record_poll_failure(tracked_player: Player, exc: Exception):
+    account_id = tracked_player.short_steamID
+    failures = _poll_failures.get(account_id, 0) + 1
+    _poll_failures[account_id] = failures
+    delay = min(
+        config.ERROR_BACKOFF_MAX,
+        config.ERROR_BACKOFF_BASE * (2 ** min(failures - 1, 5)),
+    )
+    _next_poll_at[account_id] = time.monotonic() + delay
+    logger.warning(
+        "读取 %s 的最新比赛失败，第 %s 次；%.0f 秒后重试: %s",
+        tracked_player.nickname,
+        failures,
+        delay,
+        exc,
+    )
+
+
+def _record_poll_success(tracked_player: Player):
+    _poll_failures.pop(tracked_player.short_steamID, None)
+    _next_poll_at.pop(tracked_player.short_steamID, None)
+
+
+def update_DOTA2() -> Dict:
+    """Concurrently find new matches without marking them processed."""
+    now = time.monotonic()
+    eligible = [
+        tracked_player
+        for tracked_player in PLAYER_LIST
+        if now >= _next_poll_at.get(tracked_player.short_steamID, 0)
+    ]
+    result = {}
+    if not eligible:
+        return result
+
+    worker_count = max(1, min(config.POLL_WORKERS, len(eligible)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(_fetch_latest_match, tracked_player): tracked_player
+            for tracked_player in eligible
+        }
+        for future in as_completed(futures):
+            tracked_player = futures[future]
+            try:
+                match_ids = future.result()
+            except Exception as exc:
+                _record_poll_failure(tracked_player, exc)
+                continue
+
+            _record_poll_success(tracked_player)
+            try:
+                cursor_index = match_ids.index(int(tracked_player.last_DOTA2_match_ID))
+                unseen = match_ids[:cursor_index]
+            except (ValueError, TypeError):
+                # Unknown cursors can happen on first import or when history visibility changes.
+                # Preserve the old behavior by reporting only the newest match in that case.
+                unseen = match_ids[:1]
+            for match_id in reversed(unseen):
+                result.setdefault(match_id, []).append(tracked_player)
 
     return result
 
 
+def _players_by_ids(player_ids):
+    wanted = set(int(player_id) for player_id in player_ids)
+    return [
+        tracked_player
+        for tracked_player in PLAYER_LIST
+        if tracked_player.short_steamID in wanted
+    ]
+
+
+def _sync_player_objects(player_ids, match_id):
+    wanted = set(int(player_id) for player_id in player_ids)
+    for tracked_player in PLAYER_LIST:
+        if tracked_player.short_steamID in wanted:
+            tracked_player.last_DOTA2_match_ID = match_id
+
+
+def _queue_detected_matches(detected_matches):
+    for match_id, detected_players in detected_matches.items():
+        entry = get_match_outbox(match_id)
+        detected_ids = [player.short_steamID for player in detected_players]
+
+        if entry and entry['status'] == 'sent':
+            acknowledge_sent_match(match_id, detected_ids)
+            _sync_player_objects(detected_ids, match_id)
+            logger.info("比赛 %s 已发送，仅同步新增玩家状态", match_id)
+            continue
+
+        all_ids = set(detected_ids)
+        if entry:
+            all_ids.update(entry['player_ids'])
+            if entry['status'] == 'pending' and all_ids == set(entry['player_ids']):
+                # 已持久化的战报由待发队列按退避时间处理，无需重复生成详情。
+                continue
+        report_players = _players_by_ids(all_ids)
+
+        try:
+            payload = DOTA2.generate_match_message(match_id, report_players)
+            enqueue_match(match_id, payload, all_ids)
+            logger.info("比赛 %s 已进入待发队列，玩家数: %s", match_id, len(all_ids))
+        except DOTA2.DOTA2HTTPError as exc:
+            logger.warning("比赛 %s 详情尚未就绪，下轮重试: %s", match_id, exc)
+        except Exception:
+            logger.exception("比赛 %s 战报生成异常，下轮重试", match_id)
+
+
+def _deliver_pending_matches():
+    for item in get_pending_matches():
+        match_id = item['match_id']
+        mark_match_attempt(match_id)
+        try:
+            result = send(item['payload']) or {}
+            message_id = result.get('message_id')
+        except MessageSendError as exc:
+            mark_match_failed(match_id, exc)
+            logger.warning("比赛 %s 发送失败，已安排重试: %s", match_id, exc)
+            continue
+        except Exception as exc:
+            mark_match_failed(match_id, exc)
+            logger.exception("比赛 %s 发送异常，已安排重试", match_id)
+            continue
+
+        player_ids = mark_match_sent(match_id, message_id)
+        _sync_player_objects(player_ids, match_id)
+        logger.info("比赛 %s 战报发送成功，消息 ID: %s", match_id, message_id)
+
+
 def update_and_send_message_DOTA2():
-    # 格式: { match_id1: [player1, player2, player3], match_id2: [player1, player2]}
-    result = update_DOTA2()
-    for match_id in result:
-        msg = DOTA2.generate_match_message(
-            match_id=match_id,
-            player_list=result[match_id]
-        )
-        if isinstance(msg, str):
-            send(msg)
+    detected_matches = update_DOTA2()
+    _queue_detected_matches(detected_matches)
+    _deliver_pending_matches()
 
 
 def update_and_send_gaming_status():
-    msg = gaming_status_watcher()
-    if isinstance(msg, str):
-        send(msg)
+    try:
+        msg = gaming_status_watcher()
+        if isinstance(msg, str):
+            send(msg)
+    except Exception:
+        logger.exception("Steam 游戏状态监控失败，将在下轮重试")

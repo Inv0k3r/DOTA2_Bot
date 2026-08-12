@@ -2,11 +2,11 @@
 # -*- coding: UTF-8 -*-
 import requests
 from DOTA2_dicts import *
-from player import player
+from player import Player
 import random
 import time
-from typing import Dict
-from config import API_KEY, ENABLE_URL, DEFAULT_NAME_ONLY
+from typing import Dict, List
+from config import API_KEY, ENABLE_URL, DEFAULT_NAME_ONLY, OPENDOTA_API_URL, REQUEST_TIMEOUT
 
 
 # 异常处理
@@ -14,82 +14,173 @@ class DOTA2HTTPError(Exception):
     pass
 
 
+_HERO_NAMES_CACHE = {}
+_HERO_NAMES_LOADED = False
+_CONSTANTS_CACHE = {}
+
+
+def _request_json(url: str, params=None, provider="API"):
+    try:
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else "unknown"
+        raise DOTA2HTTPError(
+            "{} returned HTTP {}".format(provider, status_code)
+        ) from exc
+    except requests.RequestException as exc:
+        raise DOTA2HTTPError(
+            "{} request failed: {}".format(provider, type(exc).__name__)
+        ) from exc
+    except ValueError as exc:
+        raise DOTA2HTTPError("{} returned invalid JSON".format(provider)) from exc
+
+
 # 根据slot判断队伍, 返回1为天辉, 2为夜魇
 def get_team_by_slot(slot: int) -> int:
-    if slot < 100:
+    if slot < 128:
         return 1
     else:
         return 2
 
 
 def get_last_match_id_by_short_steamID(short_steamID: int) -> int:
-    # get match_id
-    url = 'https://api.steampowered.com/IDOTA2Match_570/GetMatchHistory/v001/?key={}' \
-          '&account_id={}&matches_requested=1'.format(API_KEY, short_steamID)
-    try:
-        response = requests.get(url)
-    except requests.RequestException:
-        raise DOTA2HTTPError("Requests Error")
-    if response.status_code >= 400:
-        if response.status_code == 401:
-            raise DOTA2HTTPError("Unauthorized request 401. Verify API key.")
-        if response.status_code == 503:
-            raise DOTA2HTTPError("The server is busy or you exceeded limits. Please wait 30s and try again.")
-        raise DOTA2HTTPError("Failed to retrieve data: %s. URL: %s" % (response.status_code, url))
-
-    match = response.json()
+    match = _request_json(
+        'https://api.steampowered.com/IDOTA2Match_570/GetMatchHistory/v001/',
+        params={
+            'key': API_KEY,
+            'account_id': short_steamID,
+            'matches_requested': 1,
+        },
+        provider="Steam match history",
+    )
     try:
         match_id = match["result"]["matches"][0]["match_id"]
-    except KeyError:
-        raise DOTA2HTTPError("Response Error: Key Error")
-    except IndexError:
-        raise DOTA2HTTPError("Response Error: Index Error")
+    except (KeyError, IndexError, TypeError) as exc:
+        raise DOTA2HTTPError("Steam match history contains no visible match") from exc
     return match_id
 
 
+def get_recent_match_ids_by_short_steamID(short_steamID: int, limit: int = 20) -> List[int]:
+    """Return recent public matches newest first, preferring OpenDota history."""
+    errors = []
+    try:
+        matches = _request_json(
+            '{}/players/{}/recentMatches'.format(OPENDOTA_API_URL, short_steamID),
+            provider="OpenDota recent matches",
+        )
+        if isinstance(matches, list):
+            ids = [int(item['match_id']) for item in matches if item.get('match_id')]
+            if ids:
+                return ids[:limit]
+    except DOTA2HTTPError as exc:
+        errors.append(str(exc))
+
+    try:
+        result = _request_json(
+            'https://api.steampowered.com/IDOTA2Match_570/GetMatchHistory/v001/',
+            params={'key': API_KEY, 'account_id': short_steamID, 'matches_requested': limit},
+            provider="Steam match history",
+        )
+        ids = [int(item['match_id']) for item in result.get('result', {}).get('matches', [])]
+        if ids:
+            return ids
+    except DOTA2HTTPError as exc:
+        errors.append(str(exc))
+    raise DOTA2HTTPError('; '.join(errors) or 'match history contains no visible match')
+
+
+def _get_match_detail_from_opendota(match_id: int) -> Dict:
+    match = _request_json(
+        '{}/matches/{}'.format(OPENDOTA_API_URL, match_id),
+        provider="OpenDota match details",
+    )
+    if match.get('match_id') != match_id or not isinstance(match.get('players'), list):
+        raise DOTA2HTTPError("OpenDota returned incomplete match details")
+    return match
+
+
+def _get_match_detail_from_steam(match_id: int) -> Dict:
+    match = _request_json(
+        'https://api.steampowered.com/IDOTA2Match_570/GetMatchDetails/v001/',
+        params={'key': API_KEY, 'match_id': match_id},
+        provider="Steam match details",
+    )
+    result = match.get('result')
+    if not isinstance(result, dict) or not isinstance(result.get('players'), list):
+        raise DOTA2HTTPError("Steam returned incomplete match details")
+    return result
+
+
 def get_match_detail_info(match_id: int) -> Dict:
-    # get match detail
-    url = 'https://api.steampowered.com/IDOTA2Match_570/GetMatchDetails/V001/' \
-          '?key={}&match_id={}'.format(API_KEY, match_id)
-    try:
-        response = requests.get(url)
-    except requests.RequestException:
-        raise DOTA2HTTPError("Requests Error")
-    if response.status_code >= 400:
-        if response.status_code == 401:
-            raise DOTA2HTTPError("Unauthorized request 401. Verify API key.")
-        if response.status_code == 503:
-            raise DOTA2HTTPError("The server is busy or you exceeded limits. Please wait 30s and try again.")
-        raise DOTA2HTTPError("Failed to retrieve data: %s. URL: %s" % (response.status_code, url))
+    """Prefer OpenDota for current match details and fall back to Steam."""
+    errors = []
+    for loader in (_get_match_detail_from_opendota, _get_match_detail_from_steam):
+        try:
+            return loader(match_id)
+        except DOTA2HTTPError as exc:
+            errors.append(str(exc))
+    raise DOTA2HTTPError("; ".join(errors))
 
-    match = response.json()
-    try:
-        match_info = match["result"]
-    except KeyError:
-        raise DOTA2HTTPError("Response Error: Key Error")
-    except IndexError:
-        raise DOTA2HTTPError("Response Error: Index Error")
 
-    return match_info
+def _get_current_hero_name(hero_id: int) -> str:
+    global _HERO_NAMES_LOADED
+    if not _HERO_NAMES_LOADED:
+        try:
+            heroes = _request_json(
+                '{}/constants/heroes'.format(OPENDOTA_API_URL),
+                provider="OpenDota hero constants",
+            )
+            _HERO_NAMES_CACHE.update({
+                int(item['id']): item.get('localized_name', item.get('name', '未知英雄'))
+                for item in heroes.values()
+                if isinstance(item, dict) and item.get('id') is not None
+            })
+        except DOTA2HTTPError:
+            pass
+        _HERO_NAMES_LOADED = True
+    return _HERO_NAMES_CACHE.get(hero_id, '未知英雄')
+
+
+def _get_current_constant_name(constant_type: str, value: int) -> str:
+    if constant_type not in _CONSTANTS_CACHE:
+        try:
+            constants = _request_json(
+                '{}/constants/{}'.format(OPENDOTA_API_URL, constant_type),
+                provider="OpenDota {} constants".format(constant_type),
+            )
+        except DOTA2HTTPError:
+            constants = {}
+        _CONSTANTS_CACHE[constant_type] = constants
+
+    constants = _CONSTANTS_CACHE[constant_type]
+    item = constants.get(str(value), {}) if isinstance(constants, dict) else {}
+    if not isinstance(item, dict):
+        return '未知'
+    name = item.get('localized_name') or item.get('name')
+    if not name:
+        return '未知'
+    for prefix in ('game_mode_', 'lobby_type_'):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+    return name.replace('_', ' ')
 
 
 # 接收某局比赛的玩家列表, 生成比赛战报
 # 参数为玩家对象列表和比赛ID
-def generate_match_message(match_id: int, player_list: [player]):
-    try:
-        match = get_match_detail_info(match_id=match_id)
-    except DOTA2HTTPError:
-        return "DOTA2比赛战报生成失败"
+def _legacy_generate_match_message(match_id: int, player_list: List[Player]):
+    match = get_match_detail_info(match_id=match_id)
 
     start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(match['start_time']))
     duration = match['duration']
 
     # 比赛模式
-    mode_id = match["game_mode"]
-    mode = GAME_MODE.get(mode_id, '未知')
+    mode_id = match.get("game_mode", 0)
+    mode = GAME_MODE.get(mode_id) or _get_current_constant_name('game_mode', mode_id)
 
-    lobby_id = match['lobby_type']
-    lobby = LOBBY.get(lobby_id, '未知')
+    lobby_id = match.get('lobby_type', -1)
+    lobby = LOBBY.get(lobby_id) or _get_current_constant_name('lobby_type', lobby_id)
 
     player_num = len(player_list)
     nicknames = '，'.join([player_list[i].nickname for i in range(-player_num, -1)])
@@ -98,22 +189,32 @@ def generate_match_message(match_id: int, player_list: [player]):
     nicknames += player_list[-1].nickname
 
     # 更新玩家对象的比赛信息
+    found_players = set()
     for i in player_list:
         for j in match['players']:
-            if i.short_steamID == j['account_id']:
-                i.dota2_kill = j['kills']
-                i.dota2_death = j['deaths']
-                i.dota2_assist = j['assists']
+            if i.short_steamID == j.get('account_id'):
+                i.dota2_kill = j.get('kills', 0) or 0
+                i.dota2_death = j.get('deaths', 0) or 0
+                i.dota2_assist = j.get('assists', 0) or 0
                 i.kda = ((1. * i.dota2_kill + i.dota2_assist) / i.dota2_death) \
                     if i.dota2_death != 0 else (1. * i.dota2_kill + i.dota2_assist)
 
-                i.dota2_team = get_team_by_slot(j['player_slot'])
-                i.hero = j['hero_id']
-                i.last_hit = j['last_hits']
-                i.damage = j['hero_damage']
-                i.gpm = j['gold_per_min']
-                i.xpm = j['xp_per_min']
+                i.dota2_team = get_team_by_slot(j.get('player_slot', 255))
+                i.hero = j.get('hero_id', 0) or 0
+                i.last_hit = j.get('last_hits', 0) or 0
+                i.damage = j.get('hero_damage', 0) or 0
+                i.gpm = j.get('gold_per_min', 0) or 0
+                i.xpm = j.get('xp_per_min', 0) or 0
+                found_players.add(i.short_steamID)
                 break
+
+    missing_players = [
+        i.nickname for i in player_list if i.short_steamID not in found_players
+    ]
+    if missing_players:
+        raise DOTA2HTTPError(
+            "Match details do not contain tracked players: {}".format(', '.join(missing_players))
+        )
 
     team = player_list[0].dota2_team
     win = match['radiant_win'] == (team == 1)
@@ -127,10 +228,10 @@ def generate_match_message(match_id: int, player_list: [player]):
     team_kills = 0
     team_deaths = 0
     for i in match['players']:
-        if get_team_by_slot(i['player_slot']) == team:
-            team_damage += i['hero_damage']
-            team_kills += i['kills']
-            team_deaths += i['deaths']
+        if get_team_by_slot(i.get('player_slot', 255)) == team:
+            team_damage += i.get('hero_damage', 0) or 0
+            team_kills += i.get('kills', 0) or 0
+            team_deaths += i.get('deaths', 0) or 0
 
     top_kda = 0
     for i in player_list:
@@ -169,7 +270,7 @@ def generate_match_message(match_id: int, player_list: [player]):
             else:
                 hero = random.choice(HEROES_LIST_CHINESE[i.hero])
         else:
-            hero = '不知道什么鬼'
+            hero = _get_current_hero_name(i.hero)
         kda = i.kda
         last_hits = i.last_hit
         damage = i.damage
@@ -191,3 +292,17 @@ def generate_match_message(match_id: int, player_list: [player]):
         tosend.append('战绩详情: https://zh.dotabuff.com/matches/{}'.format(match_id))
 
     return '\n'.join(tosend)
+
+
+def generate_match_message(match_id: int, player_list: List[Player]):
+    """Generate one merged report for all tracked players in a match."""
+    from report_builder import build_match_report
+
+    match = get_match_detail_info(match_id=match_id)
+    try:
+        return build_match_report(
+            match_id, player_list, match,
+            _get_current_hero_name, _get_current_constant_name,
+        )
+    except ValueError as exc:
+        raise DOTA2HTTPError(str(exc)) from exc

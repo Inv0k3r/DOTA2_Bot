@@ -1,34 +1,28 @@
 #!/usr/bin/python
 # -*- coding: UTF-8 -*-
+from dataclasses import dataclass
+from typing import List, Union
 
 
-class player:
-    # 基本属性
-    short_steamID = 0
-    long_steamID = 0
-    nickname = ''
-    DOTA2_score = ''
-    last_DOTA2_match_ID = ''
-
-    # 玩家在最新的一场比赛中的数据
-    # dota2专属
-    dota2_kill = 0
-    dota2_death = 0
-    dota2_assist = 0
-    # 1为天辉, 2为夜魇
-    dota2_team = 1
-    kda = 0
-    gpm = 0
-    xpm = 0
-    hero = ''
-    last_hit = 0
-    damage = 0
-
-    def __init__(self, nickname, short_steamID, long_steamID, last_DOTA2_match_ID):
-        self.nickname = nickname
-        self.short_steamID = short_steamID
-        self.long_steamID = long_steamID
-        self.last_DOTA2_match_ID = last_DOTA2_match_ID
+@dataclass
+class Player:
+    nickname: str
+    short_steamID: int
+    long_steamID: int
+    last_DOTA2_match_ID: Union[int, str]
+    DOTA2_score: str = ''
+    dota2_kill: int = 0
+    dota2_death: int = 0
+    dota2_assist: int = 0
+    dota2_team: int = 1
+    kda: float = 0
+    gpm: int = 0
+    xpm: int = 0
+    hero: int = 0
+    last_hit: int = 0
+    damage: int = 0
 
 
-PLAYER_LIST = []
+# 兼容旧模块的导入名称，后续代码统一使用 Player。
+player = Player
+PLAYER_LIST: List[Player] = []
