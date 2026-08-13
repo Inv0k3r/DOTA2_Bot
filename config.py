@@ -23,6 +23,18 @@ OPENDOTA_RATE_LIMIT_BACKOFF = float(os.getenv("OPENDOTA_RATE_LIMIT_BACKOFF", "30
 PREDICTION_LOSS_STREAK_LIMIT = max(
     1, int(os.getenv("PREDICTION_LOSS_STREAK_LIMIT", "3"))
 )
+PREDICTION_DAILY_CHECKIN_REWARD = max(
+    1, int(os.getenv("PREDICTION_DAILY_CHECKIN_REWARD", "100"))
+)
+PREDICTION_GAME_WIN_REWARD = max(
+    0, int(os.getenv("PREDICTION_GAME_WIN_REWARD", "100"))
+)
+PREDICTION_GAME_LOSS_REWARD = max(
+    0, int(os.getenv("PREDICTION_GAME_LOSS_REWARD", "50"))
+)
+PREDICTION_UPSET_COMMISSION_RATE = min(
+    1.0, max(0.0, float(os.getenv("PREDICTION_UPSET_COMMISSION_RATE", "0.10")))
+)
 TI_EVENT_ENABLED = os.getenv("TI_EVENT_ENABLED", "1").strip().lower() not in (
     "0", "false", "no", "off"
 )

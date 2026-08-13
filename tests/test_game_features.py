@@ -22,7 +22,7 @@ class GameFeaturesTest(unittest.TestCase):
         save_stats.assert_called_once_with(101, game_features.config.QQ_GROUP_ID, 123, rows)
         settle.assert_called_once_with(
             game_features.config.QQ_GROUP_ID, 101, 123, rows,
-            participant_account_ids=None, risk_events=[],
+            participant_account_ids=None, risk_events=[], commissions=[],
         )
         self.assertTrue(any('🎲 竞猜结算' in line for line in result))
         self.assertTrue(any('竞猜人 +100' in line for line in result))
@@ -48,6 +48,29 @@ class GameFeaturesTest(unittest.TestCase):
 
         self.assertTrue(any('竞猜风控' in line for line in result))
         self.assertTrue(any('3连败' in line and '退回300点' in line for line in result))
+
+    @patch('game_features.get_player_streak', return_value=0)
+    @patch('game_features.reward_bound_players', return_value=[{
+        'user_name': '本人', 'amount': 100, 'won': True,
+    }])
+    @patch('game_features.settle_prediction_bets')
+    @patch('game_features.save_match_stats')
+    def test_commission_and_win_reward_are_added_to_report(
+        self, save_stats, settle, reward, get_streak
+    ):
+        def add_commission(_group, _match, _start, _rows, **kwargs):
+            kwargs['commissions'].append({
+                'target_nickname': '测试玩家', 'opposition_stake': 300,
+                'amount': 30,
+            })
+            return []
+
+        settle.side_effect = add_commission
+        rows = [{'account_id': 42, 'nickname': '测试玩家', 'won': True}]
+        result = game_features.persist_and_summarize(101, 123, rows)
+
+        self.assertTrue(any('押输池 300 点' in line and '+30 点' in line for line in result))
+        self.assertTrue(any('本人 获胜 +100 点' in line for line in result))
 
     @patch('game_features.get_match_stats')
     def test_roast_player_uses_match_performance(self, get_stats):

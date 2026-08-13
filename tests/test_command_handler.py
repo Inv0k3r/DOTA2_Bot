@@ -126,6 +126,7 @@ class CommandHandlerTest(unittest.TestCase):
     @patch('command_handler.get_prediction_score', return_value={
         'user_name': '竞猜人', 'score': 1200, 'wins': 3, 'losses': 1,
         'wagered': 500, 'returned': 700, 'game_earned': 50,
+        'checkin_earned': 100, 'commission_earned': 20,
     })
     def test_member_can_query_prediction_score(self, get_score, send):
         event = dict(self.admin_event, self_id=999, user_id=321,
@@ -137,6 +138,7 @@ class CommandHandlerTest(unittest.TestCase):
         self.assertTrue(command_handler.handle_event(event))
         self.assertIn('余额 1200点', send.call_args.args[0])
         self.assertIn('净收益 +200', send.call_args.args[0])
+        self.assertIn('反向提成 20', send.call_args.args[0])
 
     @patch('command_handler.send')
     @patch('command_handler.get_prediction_leaderboard', return_value=[{
@@ -186,6 +188,39 @@ class CommandHandlerTest(unittest.TestCase):
             config.QQ_GROUP_ID, 321, 'TI玩家', 7, 2163, 'Team Liquid', 125,
         )
         self.assertIn('TI下注成功', send.call_args.args[0])
+
+    @patch('command_handler.send')
+    @patch('command_handler.claim_prediction_daily_checkin', return_value={
+        'claimed': True, 'amount': 100, 'balance': 1100,
+    })
+    def test_member_can_daily_checkin(self, claim, send):
+        event = dict(self.admin_event, self_id=999, user_id=321,
+                     sender={'role': 'member', 'card': '签到人'}, message=[
+                         {'type': 'at', 'data': {'qq': '999'}},
+                         {'type': 'text', 'data': {'text': ' 签到'}},
+                     ])
+
+        self.assertTrue(command_handler.handle_event(event))
+        claim.assert_called_once_with(config.QQ_GROUP_ID, 321, '签到人')
+        self.assertIn('签到成功', send.call_args.args[0])
+
+    @patch('command_handler.send')
+    @patch('command_handler.unbind_prediction_player', return_value={
+        'user_id': 456, 'user_name': '群友', 'account_id': 42,
+        'nickname': '测试玩家',
+    })
+    def test_admin_can_unbind_mentioned_player(self, unbind, send):
+        event = dict(self.admin_event, self_id=999, message=[
+            {'type': 'at', 'data': {'qq': '999'}},
+            {'type': 'text', 'data': {'text': ' 取消绑定 '}},
+            {'type': 'at', 'data': {'qq': '456'}},
+        ])
+
+        self.assertTrue(command_handler.handle_event(event))
+        unbind.assert_called_once_with(
+            config.QQ_GROUP_ID, user_id=456, account_id=None
+        )
+        self.assertIn('已取消绑定', send.call_args.args[0])
 
 
 if __name__ == '__main__':

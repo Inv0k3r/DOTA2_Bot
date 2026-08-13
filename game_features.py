@@ -28,10 +28,11 @@ def persist_and_summarize(match_id, start_time, rows, participant_account_ids=No
     save_match_stats(match_id, config.QQ_GROUP_ID, start_time, rows)
     lines = []
     risk_events = []
+    commissions = []
     settled = settle_prediction_bets(
         config.QQ_GROUP_ID, match_id, start_time, rows,
         participant_account_ids=participant_account_ids,
-        risk_events=risk_events,
+        risk_events=risk_events, commissions=commissions,
     )
     rewards = reward_bound_players(config.QQ_GROUP_ID, match_id, rows)
     if risk_events:
@@ -60,9 +61,22 @@ def persist_and_summarize(match_id, start_time, rows, participant_account_ids=No
                 item['delta'], item['score']))
         if len(settled) > 8:
             lines.append('另有 {} 人已结算。'.format(len(settled) - 8))
+    if commissions:
+        lines.extend(['', '💸 反向提成'])
+        lines.extend(
+            '• {} 顶住群友看衰，收走押输池 {} 点的提成：+{} 点'.format(
+                item['target_nickname'], item['opposition_stake'], item['amount']
+            )
+            for item in commissions
+        )
     if rewards:
         lines.extend(['', '🎮 完赛奖励'])
-        lines.extend('• {} +{} 点'.format(item['user_name'], item['amount']) for item in rewards)
+        lines.extend(
+            '• {} {} +{} 点'.format(
+                item['user_name'], '获胜' if item['won'] else '落败', item['amount']
+            )
+            for item in rewards
+        )
     if len(rows) >= 2:
         lines.extend(_awards(rows))
         lines.extend(_combo_and_rivalry(rows))

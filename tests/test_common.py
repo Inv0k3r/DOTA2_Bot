@@ -34,6 +34,8 @@ class CommonTest(unittest.TestCase):
             DBOper.c.execute('DELETE FROM prediction_scores')
             DBOper.c.execute('DELETE FROM prediction_player_links')
             DBOper.c.execute('DELETE FROM prediction_game_rewards')
+            DBOper.c.execute('DELETE FROM prediction_daily_checkins')
+            DBOper.c.execute('DELETE FROM prediction_commissions')
             DBOper.c.execute('DELETE FROM ti_notifications')
             DBOper.c.execute('DELETE FROM ti_bets')
             DBOper.c.execute('DELETE FROM ti_scores')
@@ -481,10 +483,99 @@ class CommonTest(unittest.TestCase):
         first = DBOper.reward_bound_players(1, 101, rows)
         repeated = DBOper.reward_bound_players(1, 101, rows)
 
-        self.assertEqual(first[0]['amount'], 50)
+        self.assertEqual(first[0]['amount'], 100)
         self.assertEqual(repeated, [])
+        self.assertEqual(DBOper.get_prediction_score(1, 95)['score'], 1100)
+        self.assertEqual(DBOper.get_prediction_score(1, 95)['game_earned'], 100)
+
+    def test_bound_player_loss_reward_is_fifty(self):
+        import DBOper
+
+        DBOper.bind_prediction_player(1, 95, '玩家本人', 42, '测试玩家')
+        rewards = DBOper.reward_bound_players(
+            1, 102, [{'account_id': 42, 'nickname': '测试玩家', 'won': False}]
+        )
+
+        self.assertEqual(rewards[0]['amount'], 50)
+        self.assertFalse(rewards[0]['won'])
         self.assertEqual(DBOper.get_prediction_score(1, 95)['score'], 1050)
-        self.assertEqual(DBOper.get_prediction_score(1, 95)['game_earned'], 50)
+
+    def test_daily_checkin_awards_once_per_local_day(self):
+        import DBOper
+
+        first = DBOper.claim_prediction_daily_checkin(
+            1, 96, '签到人', now=100000
+        )
+        repeated = DBOper.claim_prediction_daily_checkin(
+            1, 96, '签到人', now=100100
+        )
+        tomorrow = DBOper.claim_prediction_daily_checkin(
+            1, 96, '签到人', now=100000 + 86400
+        )
+
+        self.assertTrue(first['claimed'])
+        self.assertFalse(repeated['claimed'])
+        self.assertTrue(tomorrow['claimed'])
+        self.assertEqual(tomorrow['balance'], 1200)
+        self.assertEqual(DBOper.get_prediction_score(1, 96)['checkin_earned'], 200)
+
+    def test_winner_gets_commission_from_bets_predicting_loss(self):
+        import DBOper
+
+        DBOper.bind_prediction_player(1, 97, '玩家本人', 42, '测试玩家')
+        DBOper.place_prediction_bet(
+            1, 98, '看衰的人', 42, '测试玩家', False, 200, 2.0, 100
+        )
+        DBOper.place_prediction_bet(
+            1, 99, '看好的人', 42, '测试玩家', True, 100, 2.0, 100
+        )
+        commissions = []
+        rows = [{'account_id': 42, 'nickname': '测试玩家', 'won': True}]
+
+        DBOper.settle_prediction_bets(
+            1, 101, 9999999999, rows, commissions=commissions
+        )
+        DBOper.settle_prediction_bets(
+            1, 101, 9999999999, rows, commissions=commissions
+        )
+
+        self.assertEqual(len(commissions), 1)
+        self.assertEqual(commissions[0]['opposition_stake'], 200)
+        self.assertEqual(commissions[0]['amount'], 20)
+        score = DBOper.get_prediction_score(1, 97)
+        self.assertEqual(score['score'], 1020)
+        self.assertEqual(score['commission_earned'], 20)
+
+    def test_loser_gets_no_commission_from_bets_predicting_win(self):
+        import DBOper
+
+        DBOper.bind_prediction_player(1, 97, '玩家本人', 42, '测试玩家')
+        DBOper.place_prediction_bet(
+            1, 99, '看好的人', 42, '测试玩家', True, 200, 2.0, 100
+        )
+        commissions = []
+        DBOper.settle_prediction_bets(
+            1, 101, 9999999999,
+            [{'account_id': 42, 'nickname': '测试玩家', 'won': False}],
+            commissions=commissions,
+        )
+
+        self.assertEqual(commissions, [])
+        self.assertEqual(DBOper.get_prediction_score(1, 97)['commission_earned'], 0)
+
+    def test_prediction_binding_is_strictly_one_to_one_and_can_unbind(self):
+        import DBOper
+
+        DBOper.bind_prediction_player(1, 90, '甲', 42, '测试玩家')
+        with self.assertRaisesRegex(ValueError, '已绑定'):
+            DBOper.bind_prediction_player(1, 90, '甲', 99, '另一个玩家')
+        with self.assertRaisesRegex(ValueError, '已被 QQ 90 绑定'):
+            DBOper.bind_prediction_player(1, 91, '乙', 42, '测试玩家')
+
+        removed = DBOper.unbind_prediction_player(1, user_id=90)
+        self.assertEqual(removed['account_id'], 42)
+        DBOper.bind_prediction_player(1, 91, '乙', 42, '测试玩家')
+        self.assertIsNone(DBOper.unbind_prediction_player(1, user_id=90))
 
     @patch("common.mark_match_sent", return_value=[42])
     @patch("common.mark_match_attempt")

@@ -12,6 +12,7 @@ import DOTA2
 from DBOper import (
     add_comment_rule,
     bind_prediction_player,
+    claim_prediction_daily_checkin,
     delete_comment_rule,
     delete_player_alias,
     disable_player,
@@ -28,6 +29,7 @@ from DBOper import (
     set_player_alias,
     set_comment_rule_enabled,
     upsert_player,
+    unbind_prediction_player,
 )
 from comment_rules import format_condition, format_rule, parse_add_rule
 from message_sender import message as send
@@ -340,9 +342,24 @@ def _prediction_score(event):
     rate = 100 * score['wins'] / total if total else 0
     net = score['returned'] - score['wagered']
     return ('🎲 {}｜余额 {}点｜{}胜{}负｜命中率 {:.0f}%\n'
-            '累计下注 {}｜累计返还 {}｜竞猜净收益 {:+d}｜完赛奖励 {}').format(
+            '累计下注 {}｜累计返还 {}｜竞猜净收益 {:+d}\n'
+            '签到奖励 {}｜完赛奖励 {}｜反向提成 {}').format(
         score['user_name'], score['score'], score['wins'], score['losses'], rate,
-        score['wagered'], score['returned'], net, score['game_earned'])
+        score['wagered'], score['returned'], net, score.get('checkin_earned', 0),
+        score['game_earned'], score.get('commission_earned', 0))
+
+
+def _daily_checkin(event):
+    result = claim_prediction_daily_checkin(
+        config.QQ_GROUP_ID, event.get('user_id', 0), _sender_name(event)
+    )
+    if result['claimed']:
+        return '📅 签到成功｜竞猜积分 +{}｜当前余额 {}点'.format(
+            result['amount'], result['balance']
+        )
+    return '📅 今天已经签过到了｜当前余额 {}点，明天再来。'.format(
+        result['balance']
+    )
 
 
 def _prediction_board():
@@ -508,13 +525,35 @@ def _bind_prediction_player(arguments, event):
     tracked = _find_player(arguments)
     if not tracked:
         return '没找到监控玩家：{}'.format(arguments)
-    refunded = bind_prediction_player(config.QQ_GROUP_ID, user_id, str(user_id),
-                                      tracked.short_steamID, tracked.nickname)
-    message = '已绑定：QQ {} ↔ {}。该玩家每完成一场战报比赛奖励 50 点。'.format(
-        user_id, tracked.nickname)
+    try:
+        refunded = bind_prediction_player(
+            config.QQ_GROUP_ID, user_id, str(user_id),
+            tracked.short_steamID, tracked.nickname
+        )
+    except ValueError as exc:
+        return '绑定失败：{}'.format(exc)
+    message = ('已绑定：QQ {} ↔ {}。每个 QQ 和游戏账号都只能绑定一次；'
+               '获胜奖励 {} 点，落败奖励 {} 点。').format(
+        user_id, tracked.nickname, config.PREDICTION_GAME_WIN_REWARD,
+        config.PREDICTION_GAME_LOSS_REWARD)
     if refunded:
         message += '\n已自动撤销其竞猜自己的未结算下注，并退回 {} 点。'.format(refunded)
     return message
+
+
+def _unbind_prediction_player(arguments, event):
+    mentioned = _mentioned_user(event)
+    tracked = _find_player(arguments) if arguments else None
+    if mentioned is None and not tracked:
+        return '格式：取消绑定 @群友\n或：取消绑定 <监控玩家>'
+    link = unbind_prediction_player(
+        config.QQ_GROUP_ID,
+        user_id=mentioned,
+        account_id=tracked.short_steamID if tracked else None,
+    )
+    if not link:
+        return '没有找到对应的竞猜绑定。'
+    return '已取消绑定：QQ {} ↔ {}。'.format(link['user_id'], link['nickname'])
 
 
 def _reply_interaction(text, event):
@@ -562,18 +601,19 @@ def _help_text():
         '@bot 谁在连败\n'
         '@bot 竞猜 <玩家> 赢/输 <点数>\n'
         '@bot 赔率 <玩家>\n'
+        '@bot 签到（每日 +{} 竞猜积分）\n'
         '@bot 我的竞猜 / 我的积分 / 竞猜榜\n'
         '@bot TI赛程\n'
         '@bot TI下注 <编号> <队伍> <点数>\n'
         '@bot 我的TI竞猜 / 我的TI积分 / TI榜\n'
-        '管理员：@bot 绑定玩家 @群友 <监控玩家> / TI退款 <编号>\n'
+        '管理员：@bot 绑定玩家 @群友 <监控玩家> / 取消绑定 @群友 / TI退款 <编号>\n'
         '回复战报并 @bot 鞭尸 [玩家] / 再骂一句 / 锐评太轻\n\n'
         '示例：\n'
         '@bot 加锐评 死亡>=10 60% 泉水通勤大师。\n'
         '@bot 加锐评 胜负=负 伤害占比>=40% 100% 这锅轮不到你。\n\n'
         '字段：击杀 死亡 助攻 KDA GPM XPM 补刀 伤害 '
         '伤害占比 参战率 死亡占比 胜负'
-    )
+    ).format(config.PREDICTION_DAILY_CHECKIN_REWARD)
 
 
 def handle_event(event):
@@ -604,6 +644,9 @@ def handle_event(event):
         return True
     if _was_at_bot(event) and text == '谁在连败':
         send(losing_streaks(PLAYER_LIST), group_id=config.QQ_GROUP_ID)
+        return True
+    if _was_at_bot(event) and text == '签到':
+        send(_daily_checkin(event), group_id=config.QQ_GROUP_ID)
         return True
     ti_text = text.casefold()
     if _was_at_bot(event) and ti_text in ('ti帮助', '国际邀请赛帮助'):
@@ -668,6 +711,13 @@ def handle_event(event):
             send('只有群主或管理员能绑定玩家。', group_id=config.QQ_GROUP_ID)
             return True
         send(_bind_prediction_player(text[len('绑定玩家'):].strip(), event),
+             group_id=config.QQ_GROUP_ID)
+        return True
+    if _was_at_bot(event) and (text == '取消绑定' or text.startswith('取消绑定 ')):
+        if not _is_admin(event):
+            send('只有群主或管理员能取消玩家绑定。', group_id=config.QQ_GROUP_ID)
+            return True
+        send(_unbind_prediction_player(text[len('取消绑定'):].strip(), event),
              group_id=config.QQ_GROUP_ID)
         return True
 
