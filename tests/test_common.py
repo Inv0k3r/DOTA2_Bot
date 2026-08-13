@@ -28,6 +28,7 @@ class CommonTest(unittest.TestCase):
         import DBOper
 
         with DBOper.conn:
+            DBOper.c.execute('DELETE FROM match_stats')
             DBOper.c.execute('DELETE FROM prediction_bets')
             DBOper.c.execute('DELETE FROM prediction_scores')
             DBOper.c.execute('DELETE FROM prediction_player_links')
@@ -44,6 +45,21 @@ class CommonTest(unittest.TestCase):
 
     def tearDown(self):
         PLAYER_LIST.clear()
+
+    def _record_results(self, account_id, results, group_id=1, first_match_id=100):
+        import DBOper
+
+        for offset, won in enumerate(results):
+            DBOper.save_match_stats(
+                first_match_id + offset, group_id, 1000 + offset,
+                [{
+                    'account_id': account_id, 'nickname': '测试玩家',
+                    'won': won, 'team': 1, 'hero_id': 1, 'kills': 1,
+                    'deaths': 1, 'assists': 1, 'gpm': 1, 'xpm': 1,
+                    'last_hits': 1, 'damage': 1, 'damage_share': 1.0,
+                    'participation': 1.0,
+                }],
+            )
 
     def test_outbox_persists_and_advances_player(self):
         import DBOper
@@ -142,6 +158,89 @@ class CommonTest(unittest.TestCase):
         self.assertEqual(DBOper.settle_prediction_bets(1, 101, 9999999999, rows), [])
         self.assertEqual(DBOper.get_open_prediction_bets(1, 92), [])
         self.assertEqual(DBOper.get_prediction_score(1, 92)['score'], 1000)
+
+    def test_three_loss_streak_locks_betting_until_next_win(self):
+        import DBOper
+
+        with patch.object(DBOper.config, 'PREDICTION_LOSS_STREAK_LIMIT', 3):
+            self._record_results(42, [False, False])
+            allowed = DBOper.place_prediction_bet(
+                1, 91, '群友', 42, '测试玩家', False, 100, 2.0, 101
+            )
+            self.assertEqual(allowed['balance'], 900)
+
+            with DBOper.conn:
+                DBOper.c.execute(
+                    "UPDATE prediction_bets SET status='cancelled' WHERE id=?",
+                    (allowed['id'],),
+                )
+            self._record_results(42, [False], first_match_id=102)
+            with self.assertRaisesRegex(ValueError, '连续 3 败'):
+                DBOper.place_prediction_bet(
+                    1, 90, '群友2', 42, '测试玩家', False, 100, 2.0, 102
+                )
+
+            self._record_results(42, [True], first_match_id=103)
+            unlocked = DBOper.place_prediction_bet(
+                1, 90, '群友2', 42, '测试玩家', True, 100, 2.0, 103
+            )
+            self.assertEqual(unlocked['balance'], 900)
+
+    def test_third_loss_cancels_all_open_bets_before_payout(self):
+        import DBOper
+
+        with patch.object(DBOper.config, 'PREDICTION_LOSS_STREAK_LIMIT', 3):
+            self._record_results(42, [False, False])
+            DBOper.place_prediction_bet(
+                1, 89, '押输的人', 42, '测试玩家', False, 100, 2.0, 101
+            )
+            DBOper.place_prediction_bet(
+                1, 88, '押赢的人', 42, '测试玩家', True, 200, 2.0, 999
+            )
+            self._record_results(42, [False], first_match_id=102)
+            risk_events = []
+
+            settled = DBOper.settle_prediction_bets(
+                1, 102, 9999999999,
+                [{'account_id': 42, 'nickname': '测试玩家', 'won': False}],
+                participant_account_ids=[42], risk_events=risk_events,
+            )
+
+            self.assertEqual(settled, [])
+            self.assertEqual(risk_events[0]['reason'], 'loss_streak')
+            self.assertEqual(risk_events[0]['bet_count'], 2)
+            self.assertEqual(risk_events[0]['refund'], 300)
+            self.assertEqual(DBOper.get_prediction_score(1, 89)['score'], 1000)
+            self.assertEqual(DBOper.get_prediction_score(1, 88)['score'], 1000)
+            self.assertEqual(DBOper.get_prediction_score(1, 89)['wins'], 0)
+            self.assertEqual(DBOper.settle_prediction_bets(
+                1, 102, 9999999999,
+                [{'account_id': 42, 'nickname': '测试玩家', 'won': False}],
+            ), [])
+            self.assertEqual(DBOper.get_prediction_score(1, 89)['score'], 1000)
+
+    def test_same_match_participant_bet_is_voided_and_refunded(self):
+        import DBOper
+
+        DBOper.bind_prediction_player(1, 87, '同局玩家', 99, '另一个玩家')
+        DBOper.place_prediction_bet(
+            1, 87, '同局玩家', 42, '测试玩家', False, 100, 2.0, 100
+        )
+        risk_events = []
+
+        settled = DBOper.settle_prediction_bets(
+            1, 101, 9999999999,
+            [{'account_id': 42, 'nickname': '测试玩家', 'won': False}],
+            participant_account_ids=[42, 99], risk_events=risk_events,
+        )
+
+        self.assertEqual(settled, [])
+        self.assertEqual(risk_events[0]['reason'], 'match_participant')
+        self.assertEqual(DBOper.get_prediction_score(1, 87)['score'], 1000)
+        cancelled = DBOper.c.execute(
+            "SELECT status,cancel_reason FROM prediction_bets WHERE user_id=87"
+        ).fetchone()
+        self.assertEqual(cancelled, ('cancelled', 'match_participant'))
 
     def test_dynamic_odds_use_smoothed_match_history(self):
         import DBOper

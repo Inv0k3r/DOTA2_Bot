@@ -6,7 +6,10 @@ import time
 
 import config
 from player import PLAYER_LIST, Player
-from DBOper import get_enabled_players, is_player_stored, insert_info
+from DBOper import (
+    get_enabled_players, is_player_stored, insert_info,
+    reconcile_prediction_loss_streak_locks,
+)
 from common import refresh_match_poll_priorities, steam_id_convert_32_to_64, update_and_send_message_DOTA2
 from event_receiver import process_pending_events, start_event_server
 import DOTA2
@@ -33,6 +36,12 @@ def init():
     PLAYER_LIST.clear()
     for row in get_enabled_players():
         PLAYER_LIST.append(Player(**row))
+    reconciled = reconcile_prediction_loss_streak_locks(config.QQ_GROUP_ID)
+    if reconciled:
+        logger.warning(
+            "启动风控已撤销 %s 个连败目标的 %s 笔未结算竞猜",
+            len(reconciled), sum(item['bet_count'] for item in reconciled),
+        )
 
 
 def update(player_num: int):

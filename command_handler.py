@@ -353,8 +353,13 @@ def _prediction_odds(arguments):
         return '没找到监控玩家：{}'.format(arguments)
     odds = get_prediction_odds(config.QQ_GROUP_ID, tracked.short_steamID)
     record = '{}胜{}负'.format(odds['wins'], odds['games'] - odds['wins']) if odds['games'] else '暂无历史'
-    return '🎲 {}｜历史 {}｜赢 {:.2f} / 输 {:.2f}'.format(
+    message = '🎲 {}｜历史 {}｜赢 {:.2f} / 输 {:.2f}'.format(
         tracked.nickname, record, odds['win'], odds['lose'])
+    if odds.get('locked'):
+        message += '\n🛡️ 已{}连败，竞猜暂时锁定；赢一场后自动恢复。'.format(
+            odds['loss_streak']
+        )
+    return message
 
 
 def _bind_prediction_player(arguments, event):

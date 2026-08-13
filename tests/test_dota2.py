@@ -41,6 +41,7 @@ class Dota2Test(unittest.TestCase):
             "radiant_win": True,
             "players": [
                 {
+                    "account_id": 99,
                     "player_slot": 128,
                     "kills": 1,
                     "deaths": 2,
@@ -64,9 +65,10 @@ class Dota2Test(unittest.TestCase):
         with patch.object(DOTA2, "get_match_detail_info", return_value=match), \
                 patch('report_builder.choose_custom_comment', return_value=None), \
                 patch('report_builder.display_name', side_effect=lambda _id, name, _match: name), \
-                patch('report_builder.persist_and_summarize', return_value=[]):
+                patch('report_builder.persist_and_summarize', return_value=[]) as persist:
             report = DOTA2.generate_match_message(123, [tracked])
 
+        self.assertEqual(persist.call_args.kwargs['participant_account_ids'], {42, 99})
         self.assertIn("测试玩家", report)
         self.assertIn("4/3/10", report)
         self.assertEqual(tracked.kda, 14 / 3)
@@ -93,9 +95,10 @@ class Dota2Test(unittest.TestCase):
         with patch.object(DOTA2, "get_match_detail_info", return_value=match), \
                 patch('report_builder.choose_custom_comment', return_value=None), \
                 patch('report_builder.display_name', side_effect=lambda _id, name, _match: name), \
-                patch('report_builder.persist_and_summarize', return_value=[]):
+                patch('report_builder.persist_and_summarize', return_value=[]) as persist:
             report = DOTA2.generate_match_message(123, [first, second])
 
+        self.assertEqual(persist.call_args.kwargs['participant_account_ids'], {42, 43})
         self.assertIn("发现2人组队开黑：甲、乙", report)
         self.assertIn("✅ 甲", report)
         self.assertIn("零死", report)

@@ -197,7 +197,14 @@ def build_match_report(match_id, tracked_players, match, current_hero_name, curr
             '补刀 {}｜伤害 {:,}（{:.1f}%）｜参战 {:.1f}%'.format(last_hits, damage, damage_share, participation),
             '💬 {}'.format(comment),
         ])
-    lines.extend(persist_and_summarize(match_id, start_timestamp, persisted_rows))
+    participant_account_ids = {
+        int(raw['account_id']) for raw in raw_players
+        if raw.get('account_id') is not None
+    }
+    lines.extend(persist_and_summarize(
+        match_id, start_timestamp, persisted_rows,
+        participant_account_ids=participant_account_ids,
+    ))
     if config.ENABLE_URL:
         lines.extend(['', '详情：https://zh.dotabuff.com/matches/{}'.format(match_id)])
     return '\n'.join(lines)

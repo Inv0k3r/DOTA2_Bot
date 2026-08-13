@@ -24,11 +24,32 @@ def display_name(account_id, nickname, match_id):
     return nickname
 
 
-def persist_and_summarize(match_id, start_time, rows):
+def persist_and_summarize(match_id, start_time, rows, participant_account_ids=None):
     save_match_stats(match_id, config.QQ_GROUP_ID, start_time, rows)
     lines = []
-    settled = settle_prediction_bets(config.QQ_GROUP_ID, match_id, start_time, rows)
+    risk_events = []
+    settled = settle_prediction_bets(
+        config.QQ_GROUP_ID, match_id, start_time, rows,
+        participant_account_ids=participant_account_ids,
+        risk_events=risk_events,
+    )
     rewards = reward_bound_players(config.QQ_GROUP_ID, match_id, rows)
+    if risk_events:
+        lines.extend(['', '🛡️ 竞猜风控'])
+        for event in risk_events:
+            if event['reason'] == 'loss_streak':
+                lines.append(
+                    '• {} 已{}连败，暂停竞猜；{}笔未结算下注退回{}点。'.format(
+                        event['target_nickname'], event['loss_streak'],
+                        event['bet_count'], event['refund'],
+                    )
+                )
+            elif event['reason'] == 'match_participant':
+                lines.append(
+                    '• 同局参与者不能押 {}；{}笔下注作废并退回{}点。'.format(
+                        event['target_nickname'], event['bet_count'], event['refund'],
+                    )
+                )
     if settled:
         correct = sum(1 for item in settled if item['correct'])
         lines.extend(['', '🎲 竞猜结算｜{} 人参与，{} 人猜中'.format(len(settled), correct)])
