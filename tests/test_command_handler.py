@@ -128,8 +128,15 @@ class CommandHandlerTest(unittest.TestCase):
 
     @patch('command_handler.send')
     @patch('command_handler.common.is_player_currently_in_dota', return_value=True)
-    @patch('command_handler.place_prediction_bet')
-    def test_member_cannot_bet_while_target_is_in_dota(self, place_bet, active, send):
+    @patch('command_handler.get_prediction_odds', return_value={
+        'games': 10, 'wins': 6, 'win': 1.8, 'lose': 2.2,
+    })
+    @patch('command_handler.place_prediction_bet', return_value={
+        'id': 2, 'changed': False, 'balance': 900,
+    })
+    def test_member_bet_while_target_is_in_dota_rolls_to_next_match(
+        self, place_bet, odds, active, send
+    ):
         PLAYER_LIST.append(Player('测试玩家', 42, 76561197960265770, 100))
         event = dict(self.admin_event, self_id=999, user_id=321,
                      sender={'role': 'member'}, message=[
@@ -138,8 +145,8 @@ class CommandHandlerTest(unittest.TestCase):
                      ])
 
         self.assertTrue(command_handler.handle_event(event))
-        place_bet.assert_not_called()
-        self.assertIn('本局已经封盘', send.call_args.args[0])
+        place_bet.assert_called_once()
+        self.assertIn('自动押正在进行这局之后的下一盘', send.call_args.args[0])
 
     @patch('command_handler.send')
     @patch('command_handler.get_prediction_score', return_value={

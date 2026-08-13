@@ -309,9 +309,7 @@ def _place_prediction(arguments, event):
     tracked = _find_player(parts[0])
     if not tracked:
         return '没找到监控玩家：{}'.format(parts[0])
-    if common.is_player_currently_in_dota(tracked.short_steamID):
-        return ('{} 当前正在运行 DOTA2，本局已经封盘。'
-                '等这局战报发出后再竞猜下一盘。').format(tracked.nickname)
+    currently_in_dota = common.is_player_currently_in_dota(tracked.short_steamID)
     odds = get_prediction_odds(config.QQ_GROUP_ID, tracked.short_steamID)
     locked_odds = odds['win'] if parts[1] == '赢' else odds['lose']
     try:
@@ -323,10 +321,17 @@ def _place_prediction(arguments, event):
     except ValueError as exc:
         return '下注失败：{}'.format(exc)
     action = '已改押' if result['changed'] else '下注成功'
+    timing_note = (
+        '{} 当前正在游戏：本次自动押正在进行这局之后的下一盘。'.format(
+            tracked.nickname
+        )
+        if currently_in_dota else
+        '只结算下注时间之后开始的比赛；已经开打的对局不会追认。'
+    )
     return ('{}：{} 下一场{} {}点｜赔率 {:.2f}｜潜在返还 {}点｜余额 {}点\n'
-            '只结算下注时间之后开始的比赛；已经开打的对局不会追认。').format(
+            '{}').format(
         action, tracked.nickname, parts[1], stake, locked_odds,
-        int(round(stake * locked_odds)), result['balance'])
+        int(round(stake * locked_odds)), result['balance'], timing_note)
 
 
 def _my_predictions(event):
