@@ -46,6 +46,8 @@ class CommonTest(unittest.TestCase):
         common._match_detail_failures.clear()
         common._next_match_detail_at.clear()
         common._priority_poll_until.clear()
+        common._active_dota_account_ids.clear()
+        common._active_status_updated_at = 0
         common._next_status_refresh_at = 0
         ti_event._next_refresh_at = 0
         self.tracked = Player("测试玩家", 42, 76561197960265770, 100)
@@ -689,6 +691,8 @@ class CommonTest(unittest.TestCase):
 
         self.assertEqual(common._next_poll_at[42], 100)
         self.assertGreater(common._priority_poll_until[42], 100)
+        self.assertTrue(common.is_player_currently_in_dota(42, now=101))
+        self.assertFalse(common.is_player_currently_in_dota(42, now=251))
 
     @patch('common.time.monotonic', return_value=100)
     def test_inactive_player_uses_slow_poll_interval(self, _monotonic):

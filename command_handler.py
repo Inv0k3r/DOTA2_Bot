@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import config
 import DOTA2
+import common
 from DBOper import (
     add_comment_rule,
     bind_prediction_player,
@@ -308,6 +309,9 @@ def _place_prediction(arguments, event):
     tracked = _find_player(parts[0])
     if not tracked:
         return '没找到监控玩家：{}'.format(parts[0])
+    if common.is_player_currently_in_dota(tracked.short_steamID):
+        return ('{} 当前正在运行 DOTA2，本局已经封盘。'
+                '等这局战报发出后再竞猜下一盘。').format(tracked.nickname)
     odds = get_prediction_odds(config.QQ_GROUP_ID, tracked.short_steamID)
     locked_odds = odds['win'] if parts[1] == '赢' else odds['lose']
     try:
@@ -319,7 +323,8 @@ def _place_prediction(arguments, event):
     except ValueError as exc:
         return '下注失败：{}'.format(exc)
     action = '已改押' if result['changed'] else '下注成功'
-    return '{}：{} 下一场{} {}点｜赔率 {:.2f}｜潜在返还 {}点｜余额 {}点'.format(
+    return ('{}：{} 下一场{} {}点｜赔率 {:.2f}｜潜在返还 {}点｜余额 {}点\n'
+            '只结算下注时间之后开始的比赛；已经开打的对局不会追认。').format(
         action, tracked.nickname, parts[1], stake, locked_odds,
         int(round(stake * locked_odds)), result['balance'])
 

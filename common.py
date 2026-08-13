@@ -28,6 +28,8 @@ _match_detail_failures = {}
 _next_match_detail_at = {}
 _priority_poll_until = {}
 _next_status_refresh_at = 0.0
+_active_dota_account_ids = set()
+_active_status_updated_at = 0.0
 
 
 def steam_id_convert_32_to_64(short_steamID: int) -> int:
@@ -73,7 +75,7 @@ def _record_poll_success(tracked_player: Player, now=None):
 
 def refresh_match_poll_priorities():
     """Use one batched Steam status call to prioritize likely-active players."""
-    global _next_status_refresh_at
+    global _next_status_refresh_at, _active_dota_account_ids, _active_status_updated_at
     now = time.monotonic()
     if now < _next_status_refresh_at:
         return
@@ -83,9 +85,22 @@ def refresh_match_poll_priorities():
     except DOTA2.DOTA2HTTPError as exc:
         logger.warning("Steam 在线状态批量检查失败，将按原计划轮询: %s", exc)
         return
+    _active_dota_account_ids = {int(account_id) for account_id in active_ids}
+    _active_status_updated_at = now
     for account_id in active_ids:
         _priority_poll_until[account_id] = now + config.ACTIVE_MATCH_GRACE
         _next_poll_at[account_id] = min(_next_poll_at.get(account_id, now), now)
+
+
+def is_player_currently_in_dota(account_id, now=None):
+    """Return True only for a recent Steam presence snapshot showing DOTA 2."""
+    now = time.monotonic() if now is None else float(now)
+    freshness = max(120.0, float(config.STEAM_STATUS_INTERVAL) * 2.5)
+    return (
+        _active_status_updated_at > 0
+        and now - _active_status_updated_at <= freshness
+        and int(account_id) in _active_dota_account_ids
+    )
 
 
 def _record_match_detail_failure(match_id: int):

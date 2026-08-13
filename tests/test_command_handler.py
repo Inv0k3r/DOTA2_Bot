@@ -101,13 +101,16 @@ class CommandHandlerTest(unittest.TestCase):
         self.assertIn('@bot 帮助', send.call_args.args[0])
 
     @patch('command_handler.send')
+    @patch('command_handler.common.is_player_currently_in_dota', return_value=False)
     @patch('command_handler.get_prediction_odds', return_value={
         'games': 10, 'wins': 6, 'win': 1.8, 'lose': 2.2,
     })
     @patch('command_handler.place_prediction_bet', return_value={
         'id': 1, 'changed': False, 'balance': 900,
     })
-    def test_member_can_bet_on_next_match_without_api_call(self, place_bet, odds, send):
+    def test_member_can_bet_on_next_match_without_api_call(
+        self, place_bet, odds, active, send
+    ):
         PLAYER_LIST.append(Player('测试玩家', 42, 76561197960265770, 100))
         event = dict(self.admin_event, self_id=999, user_id=321,
                      sender={'role': 'member', 'card': '竞猜人'}, message=[
@@ -121,6 +124,22 @@ class CommandHandlerTest(unittest.TestCase):
             config.QQ_GROUP_ID, 321, '竞猜人', 42, '测试玩家', True, 100, 1.8, 100,
         )
         self.assertIn('下注成功', send.call_args.args[0])
+        self.assertIn('已经开打的对局不会追认', send.call_args.args[0])
+
+    @patch('command_handler.send')
+    @patch('command_handler.common.is_player_currently_in_dota', return_value=True)
+    @patch('command_handler.place_prediction_bet')
+    def test_member_cannot_bet_while_target_is_in_dota(self, place_bet, active, send):
+        PLAYER_LIST.append(Player('测试玩家', 42, 76561197960265770, 100))
+        event = dict(self.admin_event, self_id=999, user_id=321,
+                     sender={'role': 'member'}, message=[
+                         {'type': 'at', 'data': {'qq': '999'}},
+                         {'type': 'text', 'data': {'text': ' 竞猜 测试玩家 赢 100'}},
+                     ])
+
+        self.assertTrue(command_handler.handle_event(event))
+        place_bet.assert_not_called()
+        self.assertIn('本局已经封盘', send.call_args.args[0])
 
     @patch('command_handler.send')
     @patch('command_handler.get_prediction_score', return_value={
