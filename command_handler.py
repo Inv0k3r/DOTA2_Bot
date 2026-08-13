@@ -14,6 +14,7 @@ from DBOper import (
     add_comment_rule,
     bind_prediction_player,
     claim_prediction_daily_checkin,
+    create_prediction_loan,
     delete_comment_rule,
     delete_player_alias,
     disable_player,
@@ -23,8 +24,10 @@ from DBOper import (
     get_open_prediction_bets,
     get_prediction_leaderboard,
     get_prediction_odds,
+    get_prediction_loan_status,
     get_prediction_score,
     place_prediction_bet,
+    repay_prediction_loan,
     save_comment_vote,
     set_combo_name,
     set_player_alias,
@@ -36,17 +39,6 @@ from comment_rules import format_condition, format_rule, parse_add_rule
 from message_sender import message as send
 from player import PLAYER_LIST, Player
 from game_features import losing_streaks, roast_player, today_leaderboard
-from ti_event import (
-    cancel_ti_market,
-    get_open_ti_bets,
-    get_ti_leaderboard,
-    get_ti_schedule,
-    get_ti_score,
-    get_ti_series,
-    place_ti_bet,
-    refresh_ti_event,
-    resolve_ti_team,
-)
 
 logger = logging.getLogger(__name__)
 STEAM_ID64_BASE = 76561197960265728
@@ -401,131 +393,51 @@ def _prediction_odds(arguments):
     return message
 
 
-def _refresh_ti_schedule(force=False):
-    if not config.TI_EVENT_ENABLED:
-        return 'TI 特别活动当前未开启。'
-    try:
-        refresh_ti_event(force=force)
-    except Exception as exc:
-        logger.exception('TI 赛程刷新失败，继续使用本地缓存: %s', exc)
-        if force:
-            return str(exc)
-    return None
-
-
-def _ti_schedule():
-    disabled = _refresh_ti_schedule()
-    if disabled:
-        return disabled
-    rows = get_ti_schedule(limit=12)
-    if not rows:
-        return '🏆 {}｜暂时没有已公布的下一轮对阵。'.format(config.TI_EVENT_NAME)
-    now = int(time.time())
-    lines = ['🏆 {}｜胜方赔率 {:.2f}'.format(config.TI_EVENT_NAME, config.TI_BET_ODDS)]
-    for row in rows:
-        close_at = row['scheduled_time'] - config.TI_BET_CLOSE_SECONDS
-        if row['status'] == 'review':
-            status = '⚠️待审核'
-        elif row['has_started'] or row['actual_time']:
-            status = '🔴进行中'
-        elif row['status'] in ('locked', 'settled', 'cancelled'):
-            status = '🔒已封盘'
-        elif now >= close_at:
-            status = '🔒已封盘'
-        else:
-            status = time.strftime('%m-%d %H:%M', time.localtime(row['scheduled_time']))
-        lines.append('#{}｜{}｜{} vs {}｜{}'.format(
-            row['node_id'], status, row['team_1_name'], row['team_2_name'],
-            row['group_name'] or row['node_name'],
-        ))
-    lines.append('下注：@bot TI下注 <编号> <队伍> <点数>')
-    return '\n'.join(lines)
-
-
-def _place_ti_prediction(arguments, event):
-    parts = arguments.split()
-    if len(parts) < 3 or not parts[-1].isdigit():
-        return '格式：TI下注 <编号> <队伍> <点数>\n示例：@bot TI下注 1 XG 100'
-    node_text = parts[0].lstrip('#')
-    if not node_text.isdigit():
-        return 'TI 对局编号必须是数字，例如：@bot TI下注 1 XG 100'
-    disabled = _refresh_ti_schedule()
-    if disabled:
-        return disabled
-    series = get_ti_series(int(node_text))
-    if not series:
-        return '没有找到 TI 对局 #{}，先发送 @bot TI赛程 查看编号。'.format(node_text)
-    team_text = ' '.join(parts[1:-1])
-    team = resolve_ti_team(series, team_text)
-    if not team:
-        return '队伍格式不对，本场可选：{} / {}'.format(
-            series['team_1_name'], series['team_2_name']
+def _create_loan(arguments, event):
+    if not re.fullmatch(r'\d+', arguments.strip()):
+        return '格式：@bot 贷款 <点数>\n额度 {}–{} 点'.format(
+            config.PREDICTION_LOAN_MIN, config.PREDICTION_LOAN_MAX
         )
     try:
-        result = place_ti_bet(
+        result = create_prediction_loan(
             config.QQ_GROUP_ID, event.get('user_id', 0), _sender_name(event),
-            int(node_text), team['id'], team['name'], int(parts[-1]),
+            int(arguments.strip()),
         )
     except ValueError as exc:
-        return 'TI下注失败：{}'.format(exc)
-    action = '已改押' if result['changed'] else 'TI下注成功'
-    return '{}：#{} {} vs {}｜押 {} {}点｜赔率 {:.2f}｜余额 {}点'.format(
-        action, node_text, series['team_1_name'], series['team_2_name'],
-        team['name'], int(parts[-1]), result['odds'], result['balance'],
+        return '贷款失败：{}'.format(exc)
+    due = time.strftime('%m-%d %H:%M', time.localtime(result['due_at']))
+    return ('🏦 放款成功｜到账 {} 点｜应还 {} 点（利息 {}）｜{} 前还款\n'
+            '当前余额 {} 点；逾期将死亡 3 天。').format(
+        result['principal'], result['total_due'], result['interest'], due,
+        result['balance'],
     )
 
 
-def _my_ti_predictions(event):
-    bets = get_open_ti_bets(config.QQ_GROUP_ID, event.get('user_id', 0))
-    if not bets:
-        return '你目前没有待结算的 TI 竞猜。\n格式：@bot TI下注 <编号> <队伍> <点数>'
-    lines = ['🏆 你的 TI 待结算竞猜']
-    for item in bets:
-        started = time.strftime('%m-%d %H:%M', time.localtime(item['scheduled_time']))
-        lines.append('#{}｜{} vs {}｜押 {} {}点 × {:.2f}｜{}'.format(
-            item['node_id'], item['team_1_name'], item['team_2_name'],
-            item['selected_team_name'], item['stake'], item['odds'], started,
-        ))
-    return '\n'.join(lines)
-
-
-def _ti_score(event):
-    score = get_ti_score(config.QQ_GROUP_ID, event.get('user_id', 0))
-    total = score['wins'] + score['losses']
-    rate = 100 * score['wins'] / total if total else 0
-    net = score['returned'] - score['wagered']
-    return ('🏆 {}｜TI积分 {}｜{}胜{}负｜命中率 {:.0f}%\n'
-            '累计下注 {}｜累计返还 {}｜净收益 {:+d}').format(
-        score['user_name'], score['score'], score['wins'], score['losses'], rate,
-        score['wagered'], score['returned'], net,
+def _repay_loan(event):
+    try:
+        result = repay_prediction_loan(config.QQ_GROUP_ID, event.get('user_id', 0))
+    except ValueError as exc:
+        return '还款失败：{}'.format(exc)
+    return '🏦 还款成功｜已扣 {} 点｜剩余 {} 点'.format(
+        result['paid'], result['balance']
     )
 
 
-def _ti_board():
-    rows = get_ti_leaderboard(config.QQ_GROUP_ID)
-    if not rows:
-        return '🏆 TI积分榜还是空的，发送 @bot TI赛程 开始竞猜。'
-    lines = ['🏆 {}积分榜'.format(config.TI_EVENT_NAME)]
-    for index, row in enumerate(rows, 1):
-        total = row['wins'] + row['losses']
-        rate = 100 * row['wins'] / total if total else 0
-        lines.append('{}. {}｜{}点｜{}胜{}负｜{:.0f}%｜净收益{:+d}'.format(
-            index, row['user_name'], row['score'], row['wins'], row['losses'],
-            rate, row['returned'] - row['wagered'],
-        ))
-    return '\n'.join(lines)
-
-
-def _ti_help():
-    return (
-        '🏆 TI 特别活动\n'
-        '@bot TI赛程\n'
-        '@bot TI下注 <编号> <队伍> <点数>\n'
-        '@bot 我的TI竞猜\n'
-        '@bot 我的TI积分\n'
-        '@bot TI榜\n'
-        '每人初始 {} 点，和普通竞猜积分完全独立；当前胜方赔率 {:.2f}。'
-    ).format(config.TI_STARTING_POINTS, config.TI_BET_ODDS)
+def _loan_status(event):
+    status = get_prediction_loan_status(config.QQ_GROUP_ID, event.get('user_id', 0))
+    if status['death']:
+        remaining = max(0, status['death']['death_until'] - status['now'])
+        days, remainder = divmod(remaining, 86400)
+        hours = remainder // 3600
+        remaining_text = '{}天{}小时'.format(days, hours) if days else '{}小时'.format(max(1, hours))
+        return '💀 竞猜账号死亡中｜约 {} 后自动复活'.format(remaining_text)
+    loan = status['loan']
+    if not loan or loan['status'] != 'open':
+        return '你目前没有待还贷款。\n格式：@bot 贷款 <点数>'
+    due = time.strftime('%m-%d %H:%M', time.localtime(loan['due_at']))
+    return '🏦 待还 {} 点｜本金 {} + 利息 {}｜到期 {}'.format(
+        loan['total_due'], loan['principal'], loan['interest'], due
+    )
 
 
 def _bind_prediction_player(arguments, event):
@@ -613,17 +525,17 @@ def _help_text():
         '@bot 赔率 <玩家>\n'
         '@bot 签到（每日 +{} 竞猜积分）\n'
         '@bot 我的竞猜 / 我的积分 / 竞猜榜\n'
-        '@bot TI赛程\n'
-        '@bot TI下注 <编号> <队伍> <点数>\n'
-        '@bot 我的TI竞猜 / 我的TI积分 / TI榜\n'
-        '管理员：@bot 绑定玩家 @群友 <监控玩家> / 取消绑定 @群友 / TI退款 <编号>\n'
+        '@bot 贷款 <点数>（{}–{}，24小时利息10%）\n'
+        '@bot 还款 / 我的贷款\n'
+        '管理员：@bot 绑定玩家 @群友 <监控玩家> / 取消绑定 @群友\n'
         '回复战报并 @bot 鞭尸 [玩家] / 再骂一句 / 锐评太轻\n\n'
         '示例：\n'
         '@bot 加锐评 死亡>=10 60% 泉水通勤大师。\n'
         '@bot 加锐评 胜负=负 伤害占比>=40% 100% 这锅轮不到你。\n\n'
         '字段：击杀 死亡 助攻 KDA GPM XPM 补刀 伤害 '
         '伤害占比 参战率 死亡占比 胜负'
-    ).format(config.PREDICTION_DAILY_CHECKIN_REWARD)
+    ).format(config.PREDICTION_DAILY_CHECKIN_REWARD,
+             config.PREDICTION_LOAN_MIN, config.PREDICTION_LOAN_MAX)
 
 
 def handle_event(event):
@@ -658,48 +570,14 @@ def handle_event(event):
     if _was_at_bot(event) and text == '签到':
         send(_daily_checkin(event), group_id=config.QQ_GROUP_ID)
         return True
-    ti_text = text.casefold()
-    if _was_at_bot(event) and ti_text in ('ti帮助', '国际邀请赛帮助'):
-        send(_ti_help(), group_id=config.QQ_GROUP_ID)
+    if _was_at_bot(event) and (text == '贷款' or text.startswith('贷款 ')):
+        send(_create_loan(text[len('贷款'):].strip(), event), group_id=config.QQ_GROUP_ID)
         return True
-    if _was_at_bot(event) and ti_text in ('ti赛程', 'ti比赛', '国际邀请赛赛程'):
-        send(_ti_schedule(), group_id=config.QQ_GROUP_ID)
+    if _was_at_bot(event) and text == '还款':
+        send(_repay_loan(event), group_id=config.QQ_GROUP_ID)
         return True
-    ti_bet_prefix = next((prefix for prefix in ('ti下注', 'ti竞猜')
-                          if ti_text == prefix or ti_text.startswith(prefix + ' ')), None)
-    if _was_at_bot(event) and ti_bet_prefix:
-        send(_place_ti_prediction(text[len(ti_bet_prefix):].strip(), event),
-             group_id=config.QQ_GROUP_ID)
-        return True
-    if _was_at_bot(event) and ti_text in ('我的ti竞猜', '我的ti'):
-        send(_my_ti_predictions(event), group_id=config.QQ_GROUP_ID)
-        return True
-    if _was_at_bot(event) and ti_text in ('我的ti积分', 'ti积分', '国际邀请赛积分'):
-        send(_ti_score(event), group_id=config.QQ_GROUP_ID)
-        return True
-    if _was_at_bot(event) and ti_text in ('ti榜', 'ti排行', 'ti积分榜', '国际邀请赛榜'):
-        send(_ti_board(), group_id=config.QQ_GROUP_ID)
-        return True
-    if _was_at_bot(event) and ti_text == 'ti刷新':
-        if not _is_admin(event):
-            send('只有群主或管理员能强制刷新 TI 赛程。', group_id=config.QQ_GROUP_ID)
-            return True
-        error = _refresh_ti_schedule(force=True)
-        send(error or 'TI 官方赛程已刷新。', group_id=config.QQ_GROUP_ID)
-        return True
-    ti_refund = re.fullmatch(r'ti退款\s+#?(\d+)', ti_text)
-    if _was_at_bot(event) and ti_refund:
-        if not _is_admin(event):
-            send('只有群主或管理员能作废 TI 盘口。', group_id=config.QQ_GROUP_ID)
-            return True
-        try:
-            count = cancel_ti_market(int(ti_refund.group(1)))
-            result = 'TI 对局 #{} 已作废，已退回 {} 笔下注。'.format(
-                ti_refund.group(1), count
-            )
-        except ValueError as exc:
-            result = 'TI退款失败：{}'.format(exc)
-        send(result, group_id=config.QQ_GROUP_ID)
+    if _was_at_bot(event) and text in ('我的贷款', '贷款状态'):
+        send(_loan_status(event), group_id=config.QQ_GROUP_ID)
         return True
     if _was_at_bot(event) and (text == '竞猜' or text.startswith('竞猜 ')):
         send(_place_prediction(text[len('竞猜'):].strip(), event), group_id=config.QQ_GROUP_ID)

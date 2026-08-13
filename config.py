@@ -35,27 +35,19 @@ PREDICTION_GAME_LOSS_REWARD = max(
 PREDICTION_UPSET_COMMISSION_RATE = min(
     1.0, max(0.0, float(os.getenv("PREDICTION_UPSET_COMMISSION_RATE", "0.10")))
 )
-TI_EVENT_ENABLED = os.getenv("TI_EVENT_ENABLED", "1").strip().lower() not in (
-    "0", "false", "no", "off"
+PREDICTION_LOAN_MIN = max(1, int(os.getenv("PREDICTION_LOAN_MIN", "100")))
+PREDICTION_LOAN_MAX = max(
+    PREDICTION_LOAN_MIN, int(os.getenv("PREDICTION_LOAN_MAX", "2000"))
 )
-TI_LEAGUE_ID = int(os.getenv("TI_LEAGUE_ID", "19719"))
-TI_EVENT_NAME = os.getenv("TI_EVENT_NAME", "国际邀请赛 2026")
-TI_LEAGUE_DATA_URL = os.getenv(
-    "TI_LEAGUE_DATA_URL",
-    "https://www.dota2.com/webapi/IDOTA2League/GetLeagueData/v001",
+PREDICTION_LOAN_INTEREST_RATE = max(
+    0.0, float(os.getenv("PREDICTION_LOAN_INTEREST_RATE", "0.10"))
 )
-TI_STARTING_POINTS = max(1, int(os.getenv("TI_STARTING_POINTS", "1000")))
-TI_BET_ODDS = max(1.0, float(os.getenv("TI_BET_ODDS", "1.90")))
-TI_BET_CLOSE_SECONDS = max(0, int(os.getenv("TI_BET_CLOSE_SECONDS", "300")))
-TI_REFRESH_INTERVAL = max(30, int(os.getenv("TI_REFRESH_INTERVAL", "60")))
-TI_DATA_MAX_AGE = max(60, int(os.getenv("TI_DATA_MAX_AGE", "180")))
-TI_RESULT_GRACE_SECONDS = max(
-    60, int(os.getenv("TI_RESULT_GRACE_SECONDS", "600"))
+PREDICTION_LOAN_TERM_SECONDS = max(
+    60, int(os.getenv("PREDICTION_LOAN_TERM_SECONDS", "86400"))
 )
-TI_MARKET_MAX_AGE = max(
-    3600, int(os.getenv("TI_MARKET_MAX_AGE", "86400"))
+PREDICTION_DEATH_SECONDS = max(
+    60, int(os.getenv("PREDICTION_DEATH_SECONDS", "259200"))
 )
-TI_MAX_STAKE = max(1, int(os.getenv("TI_MAX_STAKE", "100000")))
 EVENT_HOST = os.getenv("EVENT_HOST", "127.0.0.1")
 EVENT_PORT = int(os.getenv("EVENT_PORT", "3010"))
 EVENT_SECRET = os.getenv("EVENT_SECRET", "")

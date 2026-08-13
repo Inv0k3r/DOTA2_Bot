@@ -90,7 +90,7 @@ class CommandHandlerTest(unittest.TestCase):
         response = send.call_args.args[0]
         self.assertIn('加锐评 <条件> <概率> <文案>', response)
         self.assertIn('添加监控', response)
-        self.assertIn('TI下注', response)
+        self.assertIn('贷款 <点数>', response)
 
     @patch('command_handler.send')
     def test_bare_at_prompts_for_help(self, send):
@@ -186,34 +186,22 @@ class CommandHandlerTest(unittest.TestCase):
         self.assertIn('+250', output)
 
     @patch('command_handler.send')
-    @patch('command_handler._refresh_ti_schedule', return_value=None)
-    @patch('command_handler.get_ti_series', return_value={
-        'team_1_name': 'Team Liquid', 'team_2_name': 'Xtreme Gaming',
+    @patch('command_handler.create_prediction_loan', return_value={
+        'id': 8, 'principal': 2000, 'interest': 200, 'total_due': 2200,
+        'due_at': 2000000000, 'balance': 3000,
     })
-    @patch('command_handler.resolve_ti_team', return_value={
-        'id': 2163, 'name': 'Team Liquid',
-    })
-    @patch('command_handler.place_ti_bet', return_value={
-        'id': 8, 'changed': False, 'balance': 875, 'odds': 1.9,
-    })
-    def test_member_can_place_ti_bet_with_spaced_team_name(
-        self, place_bet, resolve_team, get_series, refresh, send
-    ):
+    def test_member_can_borrow_prediction_points(self, create_loan, send):
         event = dict(self.admin_event, self_id=999, user_id=321,
-                     sender={'role': 'member', 'card': 'TI玩家'}, message=[
+                     sender={'role': 'member', 'card': '借款人'}, message=[
                          {'type': 'at', 'data': {'qq': '999'}},
-                         {'type': 'text', 'data': {
-                             'text': ' TI竞猜 7 Team Liquid 125'
-                         }},
+                         {'type': 'text', 'data': {'text': ' 贷款 2000'}},
                      ])
 
         self.assertTrue(command_handler.handle_event(event))
-
-        resolve_team.assert_called_once_with(get_series.return_value, 'Team Liquid')
-        place_bet.assert_called_once_with(
-            config.QQ_GROUP_ID, 321, 'TI玩家', 7, 2163, 'Team Liquid', 125,
+        create_loan.assert_called_once_with(
+            config.QQ_GROUP_ID, 321, '借款人', 2000,
         )
-        self.assertIn('TI下注成功', send.call_args.args[0])
+        self.assertIn('应还 2200', send.call_args.args[0])
 
     @patch('command_handler.send')
     @patch('command_handler.claim_prediction_daily_checkin', return_value={

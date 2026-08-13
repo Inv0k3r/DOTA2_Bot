@@ -1,6 +1,7 @@
 #!/usr/bin/python
 # -*- coding: UTF-8 -*-
 import json
+import math
 import os
 import sqlite3
 import time
@@ -218,6 +219,41 @@ c.execute(
         amount INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
         PRIMARY KEY (group_id,user_id,match_id)
+    )"""
+)
+c.execute(
+    """CREATE TABLE IF NOT EXISTS prediction_loans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        user_name TEXT NOT NULL,
+        principal INTEGER NOT NULL,
+        interest INTEGER NOT NULL,
+        total_due INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        borrowed_at INTEGER NOT NULL,
+        due_at INTEGER NOT NULL,
+        repaid_at INTEGER,
+        defaulted_at INTEGER
+    )"""
+)
+c.execute(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_prediction_loans_open "
+    "ON prediction_loans(group_id,user_id) WHERE status='open'"
+)
+c.execute(
+    "CREATE INDEX IF NOT EXISTS idx_prediction_loans_due "
+    "ON prediction_loans(status,due_at)"
+)
+c.execute(
+    """CREATE TABLE IF NOT EXISTS prediction_deaths (
+        group_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        death_until INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        loan_id INTEGER,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id,user_id)
     )"""
 )
 c.execute(
@@ -638,7 +674,9 @@ def place_prediction_bet(group_id, user_id, user_name, target_account_id,
     stake = int(stake)
     if stake <= 0:
         raise ValueError('下注点数必须大于 0')
+    enforce_prediction_loan_for_user(group_id, user_id, now)
     with conn:
+        _raise_if_prediction_dead(group_id, user_id, now)
         linked_player = c.execute(
             """SELECT nickname FROM prediction_player_links
                WHERE group_id=? AND user_id=? AND account_id=?""",
@@ -730,6 +768,204 @@ def get_prediction_score(group_id, user_id):
     }
 
 
+def _format_remaining(seconds):
+    seconds = max(0, int(seconds))
+    days, remainder = divmod(seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes = (remainder + 59) // 60
+    if days:
+        return '{}天{}小时'.format(days, hours)
+    if hours:
+        return '{}小时{}分钟'.format(hours, minutes)
+    return '{}分钟'.format(max(1, minutes))
+
+
+def _active_prediction_death(group_id, user_id, now):
+    row = c.execute(
+        "SELECT death_until,reason,loan_id FROM prediction_deaths WHERE group_id=? AND user_id=?",
+        (int(group_id), int(user_id)),
+    ).fetchone()
+    if not row:
+        return None
+    if int(row[0]) <= int(now):
+        c.execute(
+            "DELETE FROM prediction_deaths WHERE group_id=? AND user_id=?",
+            (int(group_id), int(user_id)),
+        )
+        return None
+    return {'death_until': int(row[0]), 'reason': row[1], 'loan_id': row[2]}
+
+
+def _raise_if_prediction_dead(group_id, user_id, now):
+    death = _active_prediction_death(group_id, user_id, now)
+    if death:
+        raise ValueError(
+            '竞猜账号已死亡，{}后自动复活'.format(
+                _format_remaining(death['death_until'] - int(now))
+            )
+        )
+
+
+def _cancel_user_open_bets_for_default(group_id, user_id, loan_id, now):
+    """Cancel all staked assets before bankruptcy, without returning them."""
+    rows = c.execute(
+        "SELECT id FROM prediction_bets WHERE group_id=? AND user_id=? AND status='open'",
+        (int(group_id), int(user_id)),
+    ).fetchall()
+    for (bet_id,) in rows:
+        c.execute(
+            """UPDATE prediction_bets SET status='cancelled',score_delta=0,
+               cancel_reason=?,settled_at=?,updated_at=? WHERE id=? AND status='open'""",
+            ('loan_default:{}'.format(int(loan_id)), int(now), int(now), int(bet_id)),
+        )
+    return len(rows)
+
+
+def _enforce_prediction_loan_default(group_id, user_id, now):
+    row = c.execute(
+        """SELECT id,user_name,principal,interest,total_due,due_at
+           FROM prediction_loans WHERE group_id=? AND user_id=? AND status='open'
+           LIMIT 1""",
+        (int(group_id), int(user_id)),
+    ).fetchone()
+    if not row or int(row[5]) > int(now):
+        return None
+    loan_id = int(row[0])
+    c.execute(
+        """UPDATE prediction_loans SET status='defaulted',defaulted_at=?
+           WHERE id=? AND status='open'""",
+        (int(now), loan_id),
+    )
+    if not c.rowcount:
+        return None
+    cancelled = _cancel_user_open_bets_for_default(group_id, user_id, loan_id, now)
+    c.execute(
+        """UPDATE prediction_scores SET score=0,updated_at=?
+           WHERE group_id=? AND user_id=?""",
+        (int(now), int(group_id), int(user_id)),
+    )
+    death_until = int(now) + int(config.PREDICTION_DEATH_SECONDS)
+    c.execute(
+        """INSERT INTO prediction_deaths
+           (group_id,user_id,death_until,reason,loan_id,created_at)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(group_id,user_id) DO UPDATE SET
+             death_until=MAX(prediction_deaths.death_until,excluded.death_until),
+             reason=excluded.reason,loan_id=excluded.loan_id,created_at=excluded.created_at""",
+        (int(group_id), int(user_id), death_until, 'loan_default', loan_id, int(now)),
+    )
+    return {
+        'loan_id': loan_id, 'user_id': int(user_id), 'user_name': row[1],
+        'principal': int(row[2]), 'interest': int(row[3]),
+        'total_due': int(row[4]), 'death_until': death_until,
+        'cancelled_bets': cancelled,
+    }
+
+
+def enforce_overdue_prediction_loans(now=None):
+    """Apply overdue defaults globally; each loan can transition only once."""
+    now = int(time.time()) if now is None else int(now)
+    rows = c.execute(
+        "SELECT group_id,user_id FROM prediction_loans WHERE status='open' AND due_at<=?",
+        (now,),
+    ).fetchall()
+    events = []
+    with conn:
+        for group_id, user_id in rows:
+            event = _enforce_prediction_loan_default(group_id, user_id, now)
+            if event:
+                events.append(event)
+    return events
+
+
+def enforce_prediction_loan_for_user(group_id, user_id, now=None):
+    now = int(time.time()) if now is None else int(now)
+    with conn:
+        return _enforce_prediction_loan_default(group_id, user_id, now)
+
+
+def create_prediction_loan(group_id, user_id, user_name, principal, now=None):
+    now = int(time.time()) if now is None else int(now)
+    principal = int(principal)
+    if principal < config.PREDICTION_LOAN_MIN or principal > config.PREDICTION_LOAN_MAX:
+        raise ValueError(
+            '贷款额度必须在 {}–{} 点之间'.format(
+                config.PREDICTION_LOAN_MIN, config.PREDICTION_LOAN_MAX
+            )
+        )
+    enforce_prediction_loan_for_user(group_id, user_id, now)
+    with conn:
+        _raise_if_prediction_dead(group_id, user_id, now)
+        if c.execute(
+            "SELECT 1 FROM prediction_loans WHERE group_id=? AND user_id=? AND status='open'",
+            (int(group_id), int(user_id)),
+        ).fetchone():
+            raise ValueError('你还有一笔贷款未还，请先发送 @bot 还款')
+        interest = int(math.ceil(principal * config.PREDICTION_LOAN_INTEREST_RATE))
+        total_due = principal + interest
+        due_at = now + int(config.PREDICTION_LOAN_TERM_SECONDS)
+        c.execute(
+            """INSERT INTO prediction_loans
+               (group_id,user_id,user_name,principal,interest,total_due,status,borrowed_at,due_at)
+               VALUES (?,?,?,?,?,?,'open',?,?)""",
+            (int(group_id), int(user_id), user_name, principal, interest,
+             total_due, now, due_at),
+        )
+        loan_id = c.lastrowid
+        c.execute(
+            """INSERT INTO prediction_scores(group_id,user_id,user_name,score,updated_at)
+               VALUES (?,?,?,1000+?,?) ON CONFLICT(group_id,user_id) DO UPDATE SET
+               user_name=excluded.user_name,score=prediction_scores.score+?,updated_at=?""",
+            (int(group_id), int(user_id), user_name, principal, now, principal, now),
+        )
+        balance = get_prediction_score(group_id, user_id)['score']
+    return {'id': loan_id, 'principal': principal, 'interest': interest,
+            'total_due': total_due, 'due_at': due_at, 'balance': int(balance)}
+
+
+def repay_prediction_loan(group_id, user_id, now=None):
+    now = int(time.time()) if now is None else int(now)
+    enforce_prediction_loan_for_user(group_id, user_id, now)
+    with conn:
+        _raise_if_prediction_dead(group_id, user_id, now)
+        row = c.execute(
+            """SELECT id,total_due FROM prediction_loans
+               WHERE group_id=? AND user_id=? AND status='open' LIMIT 1""",
+            (int(group_id), int(user_id)),
+        ).fetchone()
+        if not row:
+            raise ValueError('你目前没有待还贷款')
+        balance = get_prediction_score(group_id, user_id)['score']
+        if int(balance) < int(row[1]):
+            raise ValueError('余额不足：需还 {} 点，当前只有 {} 点'.format(row[1], balance))
+        c.execute(
+            "UPDATE prediction_loans SET status='repaid',repaid_at=? WHERE id=? AND status='open'",
+            (now, int(row[0])),
+        )
+        c.execute(
+            "UPDATE prediction_scores SET score=score-?,updated_at=? WHERE group_id=? AND user_id=?",
+            (int(row[1]), now, int(group_id), int(user_id)),
+        )
+        remaining = int(balance) - int(row[1])
+    return {'id': int(row[0]), 'paid': int(row[1]), 'balance': remaining}
+
+
+def get_prediction_loan_status(group_id, user_id, now=None):
+    now = int(time.time()) if now is None else int(now)
+    with conn:
+        _enforce_prediction_loan_default(group_id, user_id, now)
+        death = _active_prediction_death(group_id, user_id, now)
+        row = c.execute(
+            """SELECT id,principal,interest,total_due,borrowed_at,due_at,status
+               FROM prediction_loans WHERE group_id=? AND user_id=?
+               ORDER BY id DESC LIMIT 1""",
+            (int(group_id), int(user_id)),
+        ).fetchone()
+    keys = ('id','principal','interest','total_due','borrowed_at','due_at','status')
+    return {'loan': dict(zip(keys, row)) if row else None, 'death': death,
+            'now': now}
+
+
 def get_prediction_leaderboard(group_id, limit=10):
     rows = c.execute(
         """SELECT user_id,user_name,score,wins,losses,wagered,returned,game_earned,
@@ -748,7 +984,9 @@ def claim_prediction_daily_checkin(group_id, user_id, user_name, now=None):
     now = int(time.time()) if now is None else int(now)
     checkin_date = time.strftime('%Y-%m-%d', time.localtime(now))
     amount = int(config.PREDICTION_DAILY_CHECKIN_REWARD)
+    enforce_prediction_loan_for_user(group_id, user_id, now)
     with conn:
+        _raise_if_prediction_dead(group_id, user_id, now)
         c.execute(
             """INSERT OR IGNORE INTO prediction_daily_checkins
                (group_id,user_id,checkin_date,amount,created_at) VALUES (?,?,?,?,?)""",

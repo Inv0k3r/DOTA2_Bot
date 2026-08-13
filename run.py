@@ -7,29 +7,15 @@ import time
 import config
 from player import PLAYER_LIST, Player
 from DBOper import (
-    get_enabled_players, is_player_stored, insert_info,
+    enforce_overdue_prediction_loans, get_enabled_players, is_player_stored, insert_info,
     reconcile_prediction_loss_streak_locks,
 )
 from common import refresh_match_poll_priorities, steam_id_convert_32_to_64, update_and_send_message_DOTA2
 from event_receiver import process_pending_events, start_event_server
 from message_sender import message as send
-from ti_event import deliver_ti_notifications, refresh_ti_event
 import DOTA2
 
 logger = logging.getLogger(__name__)
-
-
-def update_ti_event():
-    if not config.TI_EVENT_ENABLED:
-        return
-    try:
-        refresh_ti_event()
-    except Exception as exc:
-        logger.exception("TI 官方赛程刷新失败: %s", exc)
-    try:
-        deliver_ti_notifications(send)
-    except Exception as exc:
-        logger.exception("TI 结算通知处理失败: %s", exc)
 
 
 def init():
@@ -57,10 +43,15 @@ def init():
             "启动风控已撤销 %s 个连败目标的 %s 笔未结算竞猜",
             len(reconciled), sum(item['bet_count'] for item in reconciled),
         )
+    defaults = enforce_overdue_prediction_loans()
+    if defaults:
+        logger.warning("启动时处理了 %s 笔逾期竞猜贷款", len(defaults))
 
 
 def update(player_num: int):
-    update_ti_event()
+    defaults = enforce_overdue_prediction_loans()
+    for item in defaults:
+        logger.warning("竞猜贷款逾期：QQ %s，死亡至 %s", item['user_id'], item['death_until'])
     refresh_match_poll_priorities()
     update_and_send_message_DOTA2()
     # dota每日请求限制100,000次
@@ -88,7 +79,7 @@ def main():
         while True:
             player_num = len(PLAYER_LIST)
             if player_num == 0:
-                update_ti_event()
+                enforce_overdue_prediction_loans()
                 process_pending_events()
                 time.sleep(1)
                 continue
