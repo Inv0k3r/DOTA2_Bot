@@ -103,6 +103,46 @@ class CommonTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '余额不足'):
             DBOper.place_prediction_bet(1, 96, '穷人', 42, '测试玩家', True, 1001, 2.0, 100)
 
+    def test_bound_player_cannot_bet_on_self(self):
+        import DBOper
+
+        DBOper.bind_prediction_player(1, 94, '玩家本人', 42, '测试玩家')
+
+        with self.assertRaisesRegex(ValueError, '不能竞猜自己'):
+            DBOper.place_prediction_bet(1, 94, '玩家本人', 42, '测试玩家', False, 100, 2.0, 100)
+
+        self.assertEqual(DBOper.get_open_prediction_bets(1, 94), [])
+        self.assertEqual(DBOper.get_prediction_score(1, 94)['score'], 1000)
+
+    def test_binding_player_cancels_and_refunds_existing_self_bet(self):
+        import DBOper
+
+        DBOper.place_prediction_bet(1, 93, '玩家本人', 42, '测试玩家', False, 100, 2.0, 100)
+        self.assertEqual(DBOper.get_prediction_score(1, 93)['score'], 900)
+
+        refunded = DBOper.bind_prediction_player(1, 93, '玩家本人', 42, '测试玩家')
+
+        self.assertEqual(refunded, 100)
+        self.assertEqual(DBOper.get_open_prediction_bets(1, 93), [])
+        score = DBOper.get_prediction_score(1, 93)
+        self.assertEqual(score['score'], 1000)
+        self.assertEqual(score['returned'], 100)
+
+    def test_settlement_cancels_legacy_self_bet(self):
+        import DBOper
+
+        DBOper.place_prediction_bet(1, 92, '玩家本人', 42, '测试玩家', False, 100, 2.0, 100)
+        with DBOper.conn:
+            DBOper.c.execute(
+                'INSERT INTO prediction_player_links VALUES (?,?,?,?,?,?)',
+                (1, 92, '玩家本人', 42, '测试玩家', 1),
+            )
+
+        rows = [{'account_id': 42, 'nickname': '测试玩家', 'won': False}]
+        self.assertEqual(DBOper.settle_prediction_bets(1, 101, 9999999999, rows), [])
+        self.assertEqual(DBOper.get_open_prediction_bets(1, 92), [])
+        self.assertEqual(DBOper.get_prediction_score(1, 92)['score'], 1000)
+
     def test_dynamic_odds_use_smoothed_match_history(self):
         import DBOper
 

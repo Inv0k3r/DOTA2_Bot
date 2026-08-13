@@ -364,10 +364,13 @@ def _bind_prediction_player(arguments, event):
     tracked = _find_player(arguments)
     if not tracked:
         return '没找到监控玩家：{}'.format(arguments)
-    bind_prediction_player(config.QQ_GROUP_ID, user_id, str(user_id),
-                           tracked.short_steamID, tracked.nickname)
-    return '已绑定：QQ {} ↔ {}。该玩家每完成一场战报比赛奖励 50 点。'.format(
+    refunded = bind_prediction_player(config.QQ_GROUP_ID, user_id, str(user_id),
+                                      tracked.short_steamID, tracked.nickname)
+    message = '已绑定：QQ {} ↔ {}。该玩家每完成一场战报比赛奖励 50 点。'.format(
         user_id, tracked.nickname)
+    if refunded:
+        message += '\n已自动撤销其竞猜自己的未结算下注，并退回 {} 点。'.format(refunded)
+    return message
 
 
 def _reply_interaction(text, event):

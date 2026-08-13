@@ -548,26 +548,36 @@ def place_prediction_bet(group_id, user_id, user_name, target_account_id,
                          target_nickname, prediction, stake, odds, after_match_id):
     """Create or change one user's open bet for a tracked player's next match."""
     now = int(time.time())
+    group_id = int(group_id)
+    user_id = int(user_id)
+    target_account_id = int(target_account_id)
     prediction = 1 if prediction else 0
     stake = int(stake)
     if stake <= 0:
         raise ValueError('下注点数必须大于 0')
     with conn:
+        linked_player = c.execute(
+            """SELECT nickname FROM prediction_player_links
+               WHERE group_id=? AND user_id=? AND account_id=?""",
+            (group_id, user_id, target_account_id),
+        ).fetchone()
+        if linked_player:
+            raise ValueError('不能竞猜自己（你已绑定为 {}）'.format(linked_player[0]))
         c.execute(
             """INSERT INTO prediction_scores(group_id,user_id,user_name,score,updated_at)
                VALUES (?,?,?,1000,?) ON CONFLICT(group_id,user_id) DO UPDATE SET
                user_name=excluded.user_name,updated_at=excluded.updated_at""",
-            (int(group_id), int(user_id), user_name, now),
+            (group_id, user_id, user_name, now),
         )
         row = c.execute(
             """SELECT id,stake FROM prediction_bets
                WHERE group_id=? AND user_id=? AND target_account_id=? AND status='open'""",
-            (int(group_id), int(user_id), int(target_account_id)),
+            (group_id, user_id, target_account_id),
         ).fetchone()
         refundable = int(row[1]) if row else 0
         balance = c.execute(
             "SELECT score FROM prediction_scores WHERE group_id=? AND user_id=?",
-            (int(group_id), int(user_id)),
+            (group_id, user_id),
         ).fetchone()[0] + refundable
         if balance < stake:
             raise ValueError('余额不足：当前可用 {} 点'.format(balance))
@@ -587,7 +597,7 @@ def place_prediction_bet(group_id, user_id, user_name, target_account_id,
                    (group_id,user_id,user_name,target_account_id,target_nickname,prediction,
                     stake,odds,after_match_id,status,created_at,updated_at)
                    VALUES (?,?,?,?,?,?,?,?,?,'open',?,?)""",
-                (int(group_id), int(user_id), user_name, int(target_account_id),
+                (group_id, user_id, user_name, target_account_id,
                  target_nickname, prediction, stake, float(odds), int(after_match_id), now, now),
             )
             bet_id, changed = c.lastrowid, False
@@ -595,7 +605,7 @@ def place_prediction_bet(group_id, user_id, user_name, target_account_id,
             """UPDATE prediction_scores
                SET score=?,wagered=wagered+?,returned=returned+?,updated_at=?
                WHERE group_id=? AND user_id=?""",
-            (balance - stake, stake, refundable, now, int(group_id), int(user_id)),
+            (balance - stake, stake, refundable, now, group_id, user_id),
         )
     return {'id': bet_id, 'changed': changed, 'balance': balance - stake}
 
@@ -652,6 +662,14 @@ def settle_prediction_bets(group_id, match_id, match_start_time, match_rows):
                 (int(group_id), account_id, int(match_id), int(match_start_time)),
             ).fetchall()
             for bet_id, user_id, user_name, prediction, stake, odds in bets:
+                linked_to_target = c.execute(
+                    """SELECT 1 FROM prediction_player_links
+                       WHERE group_id=? AND user_id=? AND account_id=?""",
+                    (int(group_id), int(user_id), account_id),
+                ).fetchone()
+                if linked_to_target:
+                    _cancel_open_self_bets(group_id, user_id, account_id, now)
+                    continue
                 correct = int(prediction) == actual_won
                 score_row = c.execute(
                     """SELECT score FROM prediction_scores WHERE group_id=? AND user_id=?""",
@@ -684,13 +702,43 @@ def settle_prediction_bets(group_id, match_id, match_start_time, match_rows):
     return settled
 
 
+def _cancel_open_self_bets(group_id, user_id, account_id, now=None):
+    """Cancel and refund open bets made by a user on their linked player."""
+    now = int(time.time()) if now is None else int(now)
+    group_id = int(group_id)
+    user_id = int(user_id)
+    account_id = int(account_id)
+    rows = c.execute(
+        """SELECT id,stake FROM prediction_bets
+           WHERE group_id=? AND user_id=? AND target_account_id=? AND status='open'""",
+        (group_id, user_id, account_id),
+    ).fetchall()
+    if not rows:
+        return 0
+    refund = sum(int(row[1]) for row in rows)
+    c.execute(
+        """UPDATE prediction_scores SET score=score+?,returned=returned+?,updated_at=?
+           WHERE group_id=? AND user_id=?""",
+        (refund, refund, now, group_id, user_id),
+    )
+    c.execute(
+        """UPDATE prediction_bets SET status='cancelled',score_delta=0,
+           settled_at=?,updated_at=?
+           WHERE group_id=? AND user_id=? AND target_account_id=? AND status='open'""",
+        (now, now, group_id, user_id, account_id),
+    )
+    return refund
+
+
 def bind_prediction_player(group_id, user_id, user_name, account_id, nickname):
     now = int(time.time())
     with conn:
+        refunded = _cancel_open_self_bets(group_id, user_id, account_id, now)
         c.execute("DELETE FROM prediction_player_links WHERE group_id=? AND (user_id=? OR account_id=?)",
                   (int(group_id), int(user_id), int(account_id)))
         c.execute("INSERT INTO prediction_player_links VALUES (?,?,?,?,?,?)",
                   (int(group_id), int(user_id), user_name, int(account_id), nickname, now))
+    return refunded
 
 
 def reward_bound_players(group_id, match_id, match_rows, amount=50):
