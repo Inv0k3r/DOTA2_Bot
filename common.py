@@ -1,6 +1,8 @@
 #!/usr/bin/python
 # -*- coding: UTF-8 -*-
 import logging
+import random
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict
@@ -30,6 +32,49 @@ _priority_poll_until = {}
 _next_status_refresh_at = 0.0
 _active_dota_account_ids = set()
 _active_status_updated_at = 0.0
+_steam_history_failures = 0
+_steam_history_retry_at = 0.0
+
+
+def _is_transient_steam_history_failure(exc: Exception):
+    message = str(exc)
+    status = re.search(r"Steam match history returned HTTP (\d+)", message)
+    if status:
+        return int(status.group(1)) == 429 or int(status.group(1)) >= 500
+    return "Steam match history request failed:" in message
+
+
+def _open_steam_history_circuit(now, reason):
+    global _steam_history_failures, _steam_history_retry_at
+    cooldown = config.STEAM_HISTORY_CIRCUIT_COOLDOWN
+    _steam_history_retry_at = max(_steam_history_retry_at, now + cooldown)
+    _steam_history_failures = 0
+    for player in PLAYER_LIST:
+        spread = random.uniform(1.0, 1.0 + config.ERROR_BACKOFF_JITTER)
+        retry_at = now + cooldown * spread
+        _next_poll_at[player.short_steamID] = max(
+            _next_poll_at.get(player.short_steamID, 0), retry_at,
+        )
+    logger.warning(
+        "Steam 比赛历史全局熔断 %.0f 秒，恢复后将错峰重试: %s", cooldown, reason,
+    )
+
+
+def _record_steam_history_result(exc=None, now=None):
+    global _steam_history_failures
+    now = time.monotonic() if now is None else now
+    if exc is None:
+        _steam_history_failures = 0
+        return
+    if not _is_transient_steam_history_failure(exc):
+        return
+    if now < _steam_history_retry_at:
+        return
+    _steam_history_failures += 1
+    if "returned HTTP 429" in str(exc) or (
+        _steam_history_failures >= config.STEAM_HISTORY_CIRCUIT_THRESHOLD
+    ):
+        _open_steam_history_circuit(now, exc)
 
 
 def steam_id_convert_32_to_64(short_steamID: int) -> int:
@@ -48,11 +93,19 @@ def _record_poll_failure(tracked_player: Player, exc: Exception):
     account_id = tracked_player.short_steamID
     failures = _poll_failures.get(account_id, 0) + 1
     _poll_failures[account_id] = failures
-    delay = min(
+    base_delay = min(
         config.ERROR_BACKOFF_MAX,
         config.ERROR_BACKOFF_BASE * (2 ** min(failures - 1, 5)),
     )
+    delay = min(
+        config.ERROR_BACKOFF_MAX,
+        base_delay * random.uniform(
+            1.0 - config.ERROR_BACKOFF_JITTER,
+            1.0 + config.ERROR_BACKOFF_JITTER,
+        ),
+    )
     _next_poll_at[account_id] = time.monotonic() + delay
+    _record_steam_history_result(exc)
     logger.warning(
         "读取 %s 的最新比赛失败，第 %s 次；%.0f 秒后重试: %s",
         tracked_player.nickname,
@@ -65,6 +118,7 @@ def _record_poll_failure(tracked_player: Player, exc: Exception):
 def _record_poll_success(tracked_player: Player, now=None):
     _poll_failures.pop(tracked_player.short_steamID, None)
     now = time.monotonic() if now is None else now
+    _record_steam_history_result(now=now)
     interval = (
         config.ACTIVE_MATCH_POLL_INTERVAL
         if now < _priority_poll_until.get(tracked_player.short_steamID, 0)
@@ -122,6 +176,8 @@ def _record_match_detail_success(match_id: int):
 def update_DOTA2() -> Dict:
     """Concurrently find new matches without marking them processed."""
     now = time.monotonic()
+    if now < _steam_history_retry_at:
+        return {}
     eligible = [
         tracked_player
         for tracked_player in PLAYER_LIST

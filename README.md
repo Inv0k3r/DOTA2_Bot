@@ -239,6 +239,9 @@ python manage.py report 90045009 "示例玩家" --match-id 1234567890 --send
 - `ACTIVE_MATCH_GRACE`：玩家离开 DOTA2 后保持高频轮询的时间，默认 10800 秒。
 - `ERROR_BACKOFF_BASE`：首次失败退避秒数，默认 60。
 - `ERROR_BACKOFF_MAX`：最长退避秒数，默认 1800。
+- `ERROR_BACKOFF_JITTER`：失败重试随机抖动比例，默认 0.20，避免所有玩家同时重试。
+- `STEAM_HISTORY_CIRCUIT_THRESHOLD`：Steam 历史接口连续瞬时故障多少次后触发全局熔断，默认 3；HTTP 429 会立即熔断。
+- `STEAM_HISTORY_CIRCUIT_COOLDOWN`：Steam 历史接口全局熔断秒数，默认 300，恢复后玩家会错峰重试。
 - `OPENDOTA_RATE_LIMIT_BACKOFF`：OpenDota 返回限流响应后的全局冷却秒数，默认 300。
 - `PREDICTION_LOSS_STREAK_LIMIT`：连续失败多少场后暂停该玩家的竞猜，默认 3。
 - `PREDICTION_DAILY_CHECKIN_REWARD`：每日签到奖励，默认 100。

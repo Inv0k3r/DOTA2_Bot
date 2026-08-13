@@ -45,6 +45,8 @@ class CommonTest(unittest.TestCase):
         common._active_dota_account_ids.clear()
         common._active_status_updated_at = 0
         common._next_status_refresh_at = 0
+        common._steam_history_failures = 0
+        common._steam_history_retry_at = 0
         self.tracked = Player("测试玩家", 42, 76561197960265770, 100)
         PLAYER_LIST.append(self.tracked)
 
@@ -542,6 +544,47 @@ class CommonTest(unittest.TestCase):
             common._next_poll_at[42],
             100 + common.config.INACTIVE_MATCH_POLL_INTERVAL,
         )
+
+    @patch('common.random.uniform', return_value=1.0)
+    @patch('common.time.monotonic', return_value=100)
+    def test_transient_steam_failures_open_global_circuit(self, _monotonic, _uniform):
+        error = DOTA2.DOTA2HTTPError('Steam match history returned HTTP 503')
+
+        for _ in range(common.config.STEAM_HISTORY_CIRCUIT_THRESHOLD):
+            common._record_steam_history_result(error)
+
+        expected = 100 + common.config.STEAM_HISTORY_CIRCUIT_COOLDOWN
+        self.assertEqual(common._steam_history_retry_at, expected)
+        self.assertGreaterEqual(common._next_poll_at[42], expected)
+
+    @patch('common.DOTA2.get_recent_match_ids_by_short_steamID')
+    @patch('common.time.monotonic', return_value=100)
+    def test_global_circuit_skips_history_requests(self, _monotonic, recent):
+        common._steam_history_retry_at = 200
+
+        self.assertEqual(common.update_DOTA2(), {})
+
+        recent.assert_not_called()
+
+    @patch('common.random.uniform', return_value=1.0)
+    @patch('common.time.monotonic', return_value=100)
+    def test_steam_429_opens_circuit_immediately(self, _monotonic, _uniform):
+        error = DOTA2.DOTA2HTTPError('Steam match history returned HTTP 429')
+
+        common._record_steam_history_result(error)
+
+        self.assertEqual(
+            common._steam_history_retry_at,
+            100 + common.config.STEAM_HISTORY_CIRCUIT_COOLDOWN,
+        )
+
+    def test_success_resets_transient_steam_failure_streak(self):
+        error = DOTA2.DOTA2HTTPError('Steam match history returned HTTP 503')
+        common._record_steam_history_result(error, now=100)
+
+        common._record_steam_history_result(now=101)
+
+        self.assertEqual(common._steam_history_failures, 0)
 
 
 if __name__ == "__main__":
