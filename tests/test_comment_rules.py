@@ -22,6 +22,24 @@ class CommentRulesTest(unittest.TestCase):
         self.assertEqual(conditions[1]['value'], 40.0)
         self.assertEqual(probability, 100)
 
+    def test_percentage_condition_is_not_trigger_probability(self):
+        conditions, probability, text = comment_rules.parse_add_rule(
+            '胜负=负 伤害占比>=40% 75% 你一个人把活全干了。'
+        )
+        self.assertEqual(conditions[1], {
+            'field': 'damage_share', 'op': '>=', 'value': 40.0,
+        })
+        self.assertEqual(probability, 75)
+        self.assertEqual(text, '你一个人把活全干了。')
+
+    def test_full_width_and_probability_label(self):
+        conditions, probability, text = comment_rules.parse_add_rule(
+            '死亡 ＞＝ 10　概率＝60％：泉水通勤大师。'
+        )
+        self.assertEqual(conditions[0], {'field': 'deaths', 'op': '>=', 'value': 10.0})
+        self.assertEqual(probability, 60)
+        self.assertEqual(text, '泉水通勤大师。')
+
     @patch('comment_rules.get_comment_vote_summary', return_value={})
     @patch('comment_rules.get_comment_rules')
     def test_custom_comment_is_deterministic(self, get_rules, _votes):

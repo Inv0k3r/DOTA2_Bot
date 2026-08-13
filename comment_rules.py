@@ -3,6 +3,7 @@
 """Parse, format and deterministically evaluate group-defined comments."""
 import hashlib
 import re
+import unicodedata
 
 from DBOper import get_comment_rules, get_comment_vote_summary
 
@@ -22,14 +23,23 @@ CONDITION_RE = re.compile(
 
 
 def parse_add_rule(arguments):
-    probability_match = re.search(r'(?:^|\s)(\d{1,3})%\s+', arguments)
-    if not probability_match:
-        raise ValueError('格式：加锐评 死亡>=10 60% 文案')
+    # QQ users often enter full-width punctuation. NFKC also normalizes full-width
+    # spaces/operators while leaving Chinese text intact.
+    normalized = unicodedata.normalize('NFKC', arguments).strip()
+    probability_matches = list(re.finditer(
+        r'(?<!\S)(?:概率\s*=?\s*)?(\d{1,3})\s*%(?=\s|[|:：]|$)',
+        normalized,
+    ))
+    if not probability_matches:
+        raise ValueError('格式：加锐评 死亡>=10 60% 文案（概率也可写 概率=60%）')
+    # A percentage condition such as 伤害占比>=40% is not an independent token
+    # and therefore cannot be mistaken for the trigger probability.
+    probability_match = probability_matches[-1]
     probability = int(probability_match.group(1))
     if not 1 <= probability <= 100:
         raise ValueError('概率必须是 1% 到 100%')
-    condition_text = arguments[:probability_match.start()].strip()
-    text = arguments[probability_match.end():].strip()
+    condition_text = normalized[:probability_match.start()].strip()
+    text = normalized[probability_match.end():].lstrip(' |:：').strip()
     if not text:
         raise ValueError('锐评文案不能为空')
     if len(text) > 100:
@@ -37,7 +47,8 @@ def parse_add_rule(arguments):
     if '[CQ:' in text or 'http://' in text.lower() or 'https://' in text.lower() or '@全体成员' in text:
         raise ValueError('文案不能包含链接、CQ 码或 @全体成员')
 
-    tokens = condition_text.split()
+    condition_text = re.sub(r'\s*(>=|<=|=|>|<)\s*', r'\1', condition_text)
+    tokens = condition_text.replace('，', ' ').replace(',', ' ').split()
     if not 1 <= len(tokens) <= 5:
         raise ValueError('请设置 1 到 5 个条件，条件之间用空格分开')
     conditions = []
