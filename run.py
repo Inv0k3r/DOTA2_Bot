@@ -12,9 +12,24 @@ from DBOper import (
 )
 from common import refresh_match_poll_priorities, steam_id_convert_32_to_64, update_and_send_message_DOTA2
 from event_receiver import process_pending_events, start_event_server
+from message_sender import message as send
+from ti_event import deliver_ti_notifications, refresh_ti_event
 import DOTA2
 
 logger = logging.getLogger(__name__)
+
+
+def update_ti_event():
+    if not config.TI_EVENT_ENABLED:
+        return
+    try:
+        refresh_ti_event()
+    except Exception as exc:
+        logger.exception("TI 官方赛程刷新失败: %s", exc)
+    try:
+        deliver_ti_notifications(send)
+    except Exception as exc:
+        logger.exception("TI 结算通知处理失败: %s", exc)
 
 
 def init():
@@ -45,6 +60,7 @@ def init():
 
 
 def update(player_num: int):
+    update_ti_event()
     refresh_match_poll_priorities()
     update_and_send_message_DOTA2()
     # dota每日请求限制100,000次
@@ -72,6 +88,7 @@ def main():
         while True:
             player_num = len(PLAYER_LIST)
             if player_num == 0:
+                update_ti_event()
                 process_pending_events()
                 time.sleep(1)
                 continue
