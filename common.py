@@ -12,6 +12,7 @@ import DOTA2
 from DBOper import (
     acknowledge_sent_match,
     enqueue_match,
+    enqueue_match_addendum,
     get_match_outbox,
     get_pending_matches,
     mark_match_attempt,
@@ -239,9 +240,34 @@ def _queue_detected_matches(detected_matches):
         detected_ids = [player.short_steamID for player in detected_players]
 
         if entry and entry['status'] == 'sent':
-            acknowledge_sent_match(match_id, detected_ids)
-            _sync_player_objects(detected_ids, match_id)
-            logger.info("比赛 %s 已发送，仅同步新增玩家状态", match_id)
+            delivered_ids = {int(value) for value in entry['player_ids']}
+            late_players = [
+                player for player in detected_players
+                if player.short_steamID not in delivered_ids
+            ]
+            if not late_players:
+                acknowledge_sent_match(match_id, detected_ids)
+                _sync_player_objects(detected_ids, match_id)
+                continue
+            try:
+                late_names = '、'.join(player.nickname for player in late_players)
+                report = DOTA2.generate_match_message(match_id, late_players)
+                payload = '📎 补充战报｜较晚识别到：{}\n{}'.format(late_names, report)
+                if enqueue_match_addendum(
+                    match_id, payload,
+                    [player.short_steamID for player in late_players],
+                ):
+                    _record_match_detail_success(match_id)
+                    logger.info("比赛 %s 已生成补充战报: %s", match_id, late_names)
+            except DOTA2.DOTA2HTTPError as exc:
+                failures, delay = _record_match_detail_failure(match_id)
+                logger.warning(
+                    "比赛 %s 补充战报尚未就绪，第 %s 次；%.0f 秒后重试: %s",
+                    match_id, failures, delay, exc,
+                )
+            except Exception:
+                _record_match_detail_failure(match_id)
+                logger.exception("比赛 %s 补充战报生成异常，下轮重试", match_id)
             continue
 
         all_ids = set(detected_ids)

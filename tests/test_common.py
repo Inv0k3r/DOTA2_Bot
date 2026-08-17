@@ -82,6 +82,20 @@ class CommonTest(unittest.TestCase):
         self.assertEqual(DBOper.get_DOTA2_match_ID(42), 101)
         self.assertEqual(DBOper.get_match_outbox_status(101), 'sent')
 
+    def test_sent_match_can_queue_addendum_for_late_player(self):
+        import DBOper
+
+        match_id = 901001
+        DBOper.enqueue_match(match_id, 'original', [99])
+        DBOper.mark_match_sent(match_id, 123)
+
+        self.assertTrue(DBOper.enqueue_match_addendum(match_id, 'addendum', [42]))
+        self.assertFalse(DBOper.enqueue_match_addendum(match_id, 'duplicate', [42]))
+        pending = DBOper.get_pending_matches()
+        item = next(row for row in pending if row['match_id'] == match_id)
+        self.assertEqual(item['payload'], 'addendum')
+        self.assertEqual(item['player_ids'], [42, 99])
+
     def test_prediction_bet_can_change_and_settles_once(self):
         import DBOper
 
@@ -495,6 +509,33 @@ class CommonTest(unittest.TestCase):
         generate.assert_not_called()
         get_outbox.assert_not_called()
         enqueue.assert_not_called()
+
+    @patch("common.enqueue_match_addendum", return_value=True)
+    @patch("common.DOTA2.generate_match_message", return_value="late report")
+    @patch("common.get_match_outbox", return_value={
+        'status': 'sent', 'payload': 'original', 'player_ids': [99],
+    })
+    def test_late_player_queues_addendum(self, get_outbox, generate, enqueue_addendum):
+        common._queue_detected_matches({101: [self.tracked]})
+
+        generate.assert_called_once_with(101, [self.tracked])
+        payload = enqueue_addendum.call_args.args[1]
+        self.assertIn('补充战报', payload)
+        self.assertIn('late report', payload)
+        enqueue_addendum.assert_called_once_with(101, payload, [42])
+
+    @patch("common.acknowledge_sent_match")
+    @patch("common.DOTA2.generate_match_message")
+    @patch("common.get_match_outbox", return_value={
+        'status': 'sent', 'payload': 'original', 'player_ids': [42],
+    })
+    def test_already_delivered_player_is_only_acknowledged(
+        self, get_outbox, generate, acknowledge
+    ):
+        common._queue_detected_matches({101: [self.tracked]})
+
+        generate.assert_not_called()
+        acknowledge.assert_called_once_with(101, [42])
 
     @patch("common.mark_match_failed")
     @patch("common.mark_match_attempt")

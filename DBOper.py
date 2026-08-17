@@ -1424,6 +1424,31 @@ def enqueue_match(match_id, payload, player_ids):
     return True
 
 
+def enqueue_match_addendum(match_id, payload, player_ids):
+    """Reopen a sent outbox row for newly discovered tracked players only."""
+    now = int(time.time())
+    row = c.execute(
+        "SELECT status, player_ids FROM match_outbox WHERE match_id=?",
+        (int(match_id),),
+    ).fetchone()
+    if not row or row[0] != 'sent':
+        return False
+    existing_ids = {int(value) for value in json.loads(row[1])}
+    new_ids = {int(value) for value in player_ids} - existing_ids
+    if not new_ids:
+        return False
+    merged_ids = sorted(existing_ids.union(new_ids))
+    with conn:
+        c.execute(
+            """UPDATE match_outbox
+               SET payload=?,player_ids=?,status='pending',attempts=0,
+                   last_error=NULL,next_attempt_at=0,updated_at=?
+               WHERE match_id=? AND status='sent'""",
+            (payload, json.dumps(merged_ids), now, int(match_id)),
+        )
+    return bool(c.rowcount)
+
+
 def get_pending_matches(limit=20):
     rows = c.execute(
         """SELECT match_id, payload, player_ids, attempts
