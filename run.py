@@ -8,7 +8,7 @@ import config
 from player import PLAYER_LIST, Player
 from DBOper import (
     enforce_overdue_prediction_loans, get_enabled_players, is_player_stored, insert_info,
-    reconcile_prediction_loss_streak_locks,
+    reconcile_prediction_loss_streak_locks, refresh_all_prediction_markets,
 )
 from common import refresh_match_poll_priorities, steam_id_convert_32_to_64, update_and_send_message_DOTA2
 from event_receiver import process_pending_events, start_event_server
@@ -43,6 +43,9 @@ def init():
             "启动风控已撤销 %s 个连败目标的 %s 笔未结算竞猜",
             len(reconciled), sum(item['bet_count'] for item in reconciled),
         )
+    refreshed_markets = refresh_all_prediction_markets()
+    if refreshed_markets:
+        logger.info("启动时已按实时奖池刷新 %s 个竞猜盘口", refreshed_markets)
     defaults = enforce_overdue_prediction_loans()
     if defaults:
         logger.warning("启动时处理了 %s 笔逾期竞猜贷款", len(defaults))

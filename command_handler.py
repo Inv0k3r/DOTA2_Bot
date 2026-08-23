@@ -319,6 +319,8 @@ def _place_prediction(arguments, event):
     except ValueError as exc:
         return '下注失败：{}'.format(exc)
     action = '已改押' if result['changed'] else '下注成功'
+    current_odds = result.get('odds', locked_odds)
+    market = result.get('market', odds)
     timing_note = (
         '{} 当前正在游戏：本次自动押正在进行这局之后的下一盘。'.format(
             tracked.nickname
@@ -326,10 +328,11 @@ def _place_prediction(arguments, event):
         if currently_in_dota else
         '只结算下注时间之后开始的比赛；已经开打的对局不会追认。'
     )
-    return ('{}：{} 下一场{} {}点｜赔率 {:.2f}｜潜在返还 {}点｜余额 {}点\n'
-            '{}').format(
-        action, tracked.nickname, parts[1], stake, locked_odds,
-        int(round(stake * locked_odds)), result['balance'], timing_note)
+    return ('{}：{} 下一场{} {}点｜实时赔率 {:.2f}｜潜在返还 {}点｜余额 {}点\n'
+            '当前奖池：赢 {} / 输 {}｜每次下注后赔率都会变化，以封盘赔率结算。\n{}').format(
+        action, tracked.nickname, parts[1], stake, current_odds,
+        int(round(stake * current_odds)), result['balance'],
+        market.get('win_pool', 0), market.get('lose_pool', 0), timing_note)
 
 
 def _my_predictions(event):
@@ -390,8 +393,10 @@ def _prediction_odds(arguments):
         return '没找到监控玩家：{}'.format(arguments)
     odds = get_prediction_odds(config.QQ_GROUP_ID, tracked.short_steamID)
     record = '{}胜{}负'.format(odds['wins'], odds['games'] - odds['wins']) if odds['games'] else '暂无历史'
-    message = '🎲 {}｜历史 {}｜赢 {:.2f} / 输 {:.2f}'.format(
-        tracked.nickname, record, odds['win'], odds['lose'])
+    label = '实时盘' if odds.get('market_active') else '默认盘'
+    message = '🎲 {}｜近期 {}｜{}：赢 {:.2f} / 输 {:.2f}\n奖池：赢 {} / 输 {}'.format(
+        tracked.nickname, record, label, odds['win'], odds['lose'],
+        odds.get('win_pool', 0), odds.get('lose_pool', 0))
     if odds.get('locked'):
         message += '\n🛡️ 已{}连败，竞猜暂时锁定；赢一场后自动恢复。'.format(
             odds['loss_streak']

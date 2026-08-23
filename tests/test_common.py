@@ -168,9 +168,15 @@ class CommonTest(unittest.TestCase):
         self.assertEqual(len(settled), 1)
         self.assertTrue(settled[0]['correct'])
         self.assertEqual(repeated, [])
-        self.assertEqual(DBOper.get_prediction_score(1, 99)['score'], 1100)
+        self.assertEqual(
+            DBOper.get_prediction_score(1, 99)['score'],
+            800 + int(round(200 * settled[0]['odds'])),
+        )
         self.assertEqual(DBOper.get_prediction_score(1, 99)['wagered'], 300)
-        self.assertEqual(DBOper.get_prediction_score(1, 99)['returned'], 400)
+        self.assertEqual(
+            DBOper.get_prediction_score(1, 99)['returned'],
+            100 + int(round(200 * settled[0]['odds'])),
+        )
 
     def test_prediction_loan_borrow_and_repay(self):
         import DBOper
@@ -387,6 +393,72 @@ class CommonTest(unittest.TestCase):
         odds = DBOper.get_prediction_odds(1, 42)
         self.assertEqual(odds['games'], 4)
         self.assertLess(odds['win'], odds['lose'])
+
+    def test_bet_pools_reprice_every_open_bet(self):
+        import DBOper
+
+        default = DBOper.get_prediction_odds(1, 42)
+        first = DBOper.place_prediction_bet(
+            1, 801, '押赢', 42, '测试玩家', True, 100, default['win'], 100,
+        )
+        after_win = first['market']
+        self.assertLess(after_win['win'], default['win'])
+        self.assertGreater(after_win['lose'], default['lose'])
+        self.assertEqual((after_win['win_pool'], after_win['lose_pool']), (100, 0))
+
+        second = DBOper.place_prediction_bet(
+            1, 802, '押输', 42, '测试玩家', False, 400,
+            after_win['lose'], 100,
+        )
+        market = second['market']
+        self.assertEqual((market['win_pool'], market['lose_pool']), (100, 400))
+        self.assertGreater(market['win'], after_win['win'])
+        self.assertLess(market['lose'], after_win['lose'])
+        first_bet = DBOper.get_open_prediction_bets(1, 801)[0]
+        self.assertEqual(first_bet['odds'], market['win'])
+
+    def test_startup_refresh_reprices_existing_open_markets(self):
+        import DBOper
+
+        with DBOper.conn:
+            DBOper.c.execute(
+                """INSERT INTO prediction_bets
+                   (group_id,user_id,user_name,target_account_id,target_nickname,
+                    prediction,stake,odds,after_match_id,status,created_at,updated_at)
+                   VALUES (1,820,'旧下注',42,'测试玩家',1,500,4.0,100,'open',1,1)"""
+            )
+
+        self.assertEqual(DBOper.refresh_all_prediction_markets(), 1)
+        refreshed = DBOper.get_open_prediction_bets(1, 820)[0]
+        self.assertEqual(refreshed['odds'], DBOper.get_prediction_odds(1, 42)['win'])
+        self.assertNotEqual(refreshed['odds'], 4.0)
+
+    def test_settlement_uses_final_pool_odds_for_all_bettors(self):
+        import DBOper
+
+        initial = DBOper.get_prediction_odds(1, 42)
+        DBOper.place_prediction_bet(
+            1, 811, '甲', 42, '测试玩家', True, 100, initial['win'], 100,
+        )
+        final = DBOper.place_prediction_bet(
+            1, 812, '乙', 42, '测试玩家', False, 300, initial['lose'], 100,
+        )['market']
+        # Production persists the completed match before settling; that result
+        # must not leak backwards into its own closing price.
+        self._record_results(42, [True], group_id=1, first_match_id=101)
+
+        settled = DBOper.settle_prediction_bets(
+            1, 101, 9999999999,
+            [{'account_id': 42, 'nickname': '测试玩家', 'won': True}],
+        )
+
+        winner = next(item for item in settled if item['user_id'] == 811)
+        self.assertEqual(winner['odds'], final['win'])
+        self.assertEqual(winner['payout'], int(round(100 * final['win'])))
+        stored = DBOper.c.execute(
+            'SELECT odds FROM prediction_bets WHERE id=?', (winner['bet_id'],)
+        ).fetchone()[0]
+        self.assertEqual(stored, final['win'])
 
     def test_bound_player_earns_once_per_match(self):
         import DBOper
