@@ -319,11 +319,23 @@ def _legacy_generate_match_message(match_id: int, player_list: List[Player]):
     return '\n'.join(tosend)
 
 
-def generate_match_message(match_id: int, player_list: List[Player]):
+def get_tracked_players_in_match(match: Dict, tracked_players: List[Player]):
+    """Return tracked players whose public account ID appears in match details."""
+    account_ids = {
+        int(raw['account_id']) for raw in (match.get('players') or [])
+        if raw.get('account_id') is not None
+    }
+    return [
+        tracked for tracked in tracked_players
+        if tracked.short_steamID in account_ids
+    ]
+
+
+def generate_match_message(match_id: int, player_list: List[Player], match=None):
     """Generate one merged report for all tracked players in a match."""
     from report_builder import build_match_report
 
-    match = get_match_detail_info(match_id=match_id)
+    match = match or get_match_detail_info(match_id=match_id)
     try:
         return build_match_report(
             match_id, player_list, match,

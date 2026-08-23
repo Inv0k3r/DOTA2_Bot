@@ -148,8 +148,19 @@ def build_match_report(match_id, tracked_players, match, current_hero_name, curr
     teams = {_team(by_account[p.short_steamID].get('player_slot', 255)) for p in tracked_players}
     if len(tracked_players) >= 2:
         names = '、'.join(p.nickname for p in tracked_players)
-        label = '组队开黑' if len(teams) == 1 else '同局撞车'
-        lines.append('{} 发现{}人{}：{}'.format('👥' if len(teams) == 1 else '⚔️', len(tracked_players), label, names))
+        party_ids = [by_account[p.short_steamID].get('party_id') for p in tracked_players]
+        same_party = (
+            len(teams) == 1 and party_ids[0] not in (None, 0)
+            and all(party_id == party_ids[0] for party_id in party_ids)
+        )
+        label = (
+            '组队开黑' if same_party else
+            '同队同局' if len(teams) == 1 else
+            '同局撞车'
+        )
+        lines.append('{} 发现{}人{}：{}'.format(
+            '👥' if len(teams) == 1 else '⚔️', len(tracked_players), label, names
+        ))
 
     ordered = sorted(tracked_players, key=lambda p: (_team(by_account[p.short_steamID].get('player_slot', 255)), p.nickname))
     last_side = None

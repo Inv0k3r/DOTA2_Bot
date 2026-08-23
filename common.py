@@ -30,6 +30,7 @@ _next_poll_at = {}
 _match_detail_failures = {}
 _next_match_detail_at = {}
 _priority_poll_until = {}
+_post_match_cooldown_until = {}
 _next_status_refresh_at = 0.0
 _active_dota_account_ids = set()
 _active_status_updated_at = 0.0
@@ -43,6 +44,7 @@ def forget_player(account_id):
     _poll_failures.pop(account_id, None)
     _next_poll_at.pop(account_id, None)
     _priority_poll_until.pop(account_id, None)
+    _post_match_cooldown_until.pop(account_id, None)
     _active_dota_account_ids.discard(account_id)
 
 
@@ -153,7 +155,8 @@ def refresh_match_poll_priorities():
     _active_status_updated_at = now
     for account_id in active_ids:
         _priority_poll_until[account_id] = now + config.ACTIVE_MATCH_GRACE
-        _next_poll_at[account_id] = min(_next_poll_at.get(account_id, now), now)
+        if now >= _post_match_cooldown_until.get(account_id, 0):
+            _next_poll_at[account_id] = min(_next_poll_at.get(account_id, now), now)
 
 
 def is_player_currently_in_dota(account_id, now=None):
@@ -192,6 +195,7 @@ def update_DOTA2() -> Dict:
         tracked_player
         for tracked_player in PLAYER_LIST
         if now >= _next_poll_at.get(tracked_player.short_steamID, 0)
+        and now >= _post_match_cooldown_until.get(tracked_player.short_steamID, 0)
     ]
     result = {}
     if not eligible:
@@ -241,6 +245,44 @@ def _sync_player_objects(player_ids, match_id):
             tracked_player.last_DOTA2_match_ID = match_id
 
 
+def _load_match_context(match_id, detected_players):
+    match = DOTA2.get_match_detail_info(match_id)
+    matched_players = DOTA2.get_tracked_players_in_match(match, PLAYER_LIST)
+    matched_ids = {player.short_steamID for player in matched_players}
+    missing = [
+        player.nickname for player in detected_players
+        if player.short_steamID not in matched_ids
+    ]
+    if missing:
+        raise DOTA2.DOTA2HTTPError(
+            'Match details do not contain tracked players: {}'.format(
+                ', '.join(missing)
+            )
+        )
+    return match, matched_players
+
+
+def _cooldown_players_after_match(match, players, now=None):
+    """Avoid history polling before another completed match can realistically exist."""
+    now = time.monotonic() if now is None else float(now)
+    wall_now = time.time()
+    start_time = int(match.get('start_time', 0) or 0)
+    duration = int(match.get('duration', 0) or 0)
+    match_end = start_time + duration
+    delay = max(0.0, match_end + config.POST_MATCH_POLL_COOLDOWN - wall_now)
+    if not match_end:
+        delay = config.POST_MATCH_POLL_COOLDOWN
+    cooldown_until = now + delay
+    for player in players:
+        account_id = player.short_steamID
+        _post_match_cooldown_until[account_id] = max(
+            _post_match_cooldown_until.get(account_id, 0), cooldown_until,
+        )
+        _next_poll_at[account_id] = max(
+            _next_poll_at.get(account_id, 0), cooldown_until,
+        )
+
+
 def _queue_detected_matches(detected_matches):
     for match_id, detected_players in detected_matches.items():
         if time.monotonic() < _next_match_detail_at.get(match_id, 0):
@@ -248,25 +290,61 @@ def _queue_detected_matches(detected_matches):
         entry = get_match_outbox(match_id)
         detected_ids = [player.short_steamID for player in detected_players]
 
+        if (
+            entry and entry['status'] == 'pending'
+            and set(detected_ids).issubset({int(value) for value in entry['player_ids']})
+        ):
+            # New rows are generated from full match details, so a pending row
+            # already contains every visible monitored participant.
+            continue
+
+        try:
+            match, matched_players = _load_match_context(match_id, detected_players)
+        except DOTA2.DOTA2HTTPError as exc:
+            failures, delay = _record_match_detail_failure(match_id)
+            logger.warning(
+                "比赛 %s 详情尚未就绪，第 %s 次；%.0f 秒后重试: %s",
+                match_id, failures, delay, exc,
+            )
+            continue
+        except Exception:
+            _record_match_detail_failure(match_id)
+            logger.exception("比赛 %s 详情读取异常，下轮重试", match_id)
+            continue
+
+        matched_ids = [player.short_steamID for player in matched_players]
+        detected_id_set = set(detected_ids)
+        auto_discovered = [
+            player.nickname for player in matched_players
+            if player.short_steamID not in detected_id_set
+        ]
+        if auto_discovered:
+            logger.info(
+                "比赛 %s 通过完整详情额外识别监控玩家: %s",
+                match_id, '、'.join(auto_discovered),
+            )
+
         if entry and entry['status'] == 'sent':
             delivered_ids = {int(value) for value in entry['player_ids']}
             late_players = [
-                player for player in detected_players
+                player for player in matched_players
                 if player.short_steamID not in delivered_ids
             ]
             if not late_players:
-                acknowledge_sent_match(match_id, detected_ids)
-                _sync_player_objects(detected_ids, match_id)
+                acknowledge_sent_match(match_id, matched_ids)
+                _sync_player_objects(matched_ids, match_id)
+                _cooldown_players_after_match(match, matched_players)
                 continue
             try:
                 late_names = '、'.join(player.nickname for player in late_players)
-                report = DOTA2.generate_match_message(match_id, late_players)
+                report = DOTA2.generate_match_message(match_id, late_players, match=match)
                 payload = '📎 补充战报｜较晚识别到：{}\n{}'.format(late_names, report)
                 if enqueue_match_addendum(
                     match_id, payload,
                     [player.short_steamID for player in late_players],
                 ):
                     _record_match_detail_success(match_id)
+                    _cooldown_players_after_match(match, matched_players)
                     logger.info("比赛 %s 已生成补充战报: %s", match_id, late_names)
             except DOTA2.DOTA2HTTPError as exc:
                 failures, delay = _record_match_detail_failure(match_id)
@@ -279,18 +357,16 @@ def _queue_detected_matches(detected_matches):
                 logger.exception("比赛 %s 补充战报生成异常，下轮重试", match_id)
             continue
 
-        all_ids = set(detected_ids)
+        all_ids = set(matched_ids)
         if entry:
             all_ids.update(entry['player_ids'])
-            if entry['status'] == 'pending' and all_ids == set(entry['player_ids']):
-                # 已持久化的战报由待发队列按退避时间处理，无需重复生成详情。
-                continue
         report_players = _players_by_ids(all_ids)
 
         try:
-            payload = DOTA2.generate_match_message(match_id, report_players)
+            payload = DOTA2.generate_match_message(match_id, report_players, match=match)
             enqueue_match(match_id, payload, all_ids)
             _record_match_detail_success(match_id)
+            _cooldown_players_after_match(match, report_players)
             logger.info("比赛 %s 已进入待发队列，玩家数: %s", match_id, len(all_ids))
         except DOTA2.DOTA2HTTPError as exc:
             failures, delay = _record_match_detail_failure(match_id)

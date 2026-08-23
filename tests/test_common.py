@@ -47,6 +47,7 @@ class CommonTest(unittest.TestCase):
         common._match_detail_failures.clear()
         common._next_match_detail_at.clear()
         common._priority_poll_until.clear()
+        common._post_match_cooldown_until.clear()
         common._active_dota_account_ids.clear()
         common._active_status_updated_at = 0
         common._next_status_refresh_at = 0
@@ -539,10 +540,14 @@ class CommonTest(unittest.TestCase):
     @patch("common.enqueue_match", return_value=True)
     @patch("common.get_match_outbox", return_value=None)
     @patch("common.DOTA2.generate_match_message", return_value="report")
+    @patch("common.DOTA2.get_match_detail_info", return_value={
+        "start_time": 0, "duration": 0, "players": [{"account_id": 42}],
+    })
     @patch("common.update_DOTA2")
     def test_queues_sends_and_marks_match(
         self,
         update_dota,
+        get_detail,
         generate,
         get_outbox,
         enqueue,
@@ -555,7 +560,9 @@ class CommonTest(unittest.TestCase):
 
         common.update_and_send_message_DOTA2()
 
-        generate.assert_called_once_with(101, [self.tracked])
+        generate.assert_called_once_with(
+            101, [self.tracked], match=get_detail.return_value,
+        )
         enqueue.assert_called_once_with(101, "report", {42})
         send.assert_called_once_with("report")
         mark_attempt.assert_called_once_with(101)
@@ -569,9 +576,12 @@ class CommonTest(unittest.TestCase):
         "common.DOTA2.generate_match_message",
         side_effect=DOTA2.DOTA2HTTPError("not ready"),
     )
+    @patch("common.DOTA2.get_match_detail_info", return_value={
+        "start_time": 0, "duration": 0, "players": [{"account_id": 42}],
+    })
     @patch("common.update_DOTA2")
     def test_generation_failure_does_not_queue_or_advance(
-        self, update_dota, generate, get_outbox, enqueue, get_pending
+        self, update_dota, get_detail, generate, get_outbox, enqueue, get_pending
     ):
         update_dota.return_value = {101: [self.tracked]}
 
@@ -601,13 +611,20 @@ class CommonTest(unittest.TestCase):
 
     @patch("common.enqueue_match_addendum", return_value=True)
     @patch("common.DOTA2.generate_match_message", return_value="late report")
+    @patch("common.DOTA2.get_match_detail_info", return_value={
+        "start_time": 0, "duration": 0, "players": [{"account_id": 42}],
+    })
     @patch("common.get_match_outbox", return_value={
         'status': 'sent', 'payload': 'original', 'player_ids': [99],
     })
-    def test_late_player_queues_addendum(self, get_outbox, generate, enqueue_addendum):
+    def test_late_player_queues_addendum(
+        self, get_outbox, get_detail, generate, enqueue_addendum
+    ):
         common._queue_detected_matches({101: [self.tracked]})
 
-        generate.assert_called_once_with(101, [self.tracked])
+        generate.assert_called_once_with(
+            101, [self.tracked], match=get_detail.return_value,
+        )
         payload = enqueue_addendum.call_args.args[1]
         self.assertIn('补充战报', payload)
         self.assertIn('late report', payload)
@@ -615,16 +632,55 @@ class CommonTest(unittest.TestCase):
 
     @patch("common.acknowledge_sent_match")
     @patch("common.DOTA2.generate_match_message")
+    @patch("common.DOTA2.get_match_detail_info", return_value={
+        "start_time": 0, "duration": 0, "players": [{"account_id": 42}],
+    })
     @patch("common.get_match_outbox", return_value={
         'status': 'sent', 'payload': 'original', 'player_ids': [42],
     })
     def test_already_delivered_player_is_only_acknowledged(
-        self, get_outbox, generate, acknowledge
+        self, get_outbox, get_detail, generate, acknowledge
     ):
         common._queue_detected_matches({101: [self.tracked]})
 
         generate.assert_not_called()
         acknowledge.assert_called_once_with(101, [42])
+
+    @patch("common.DOTA2.generate_match_message", return_value="merged report")
+    @patch("common.DOTA2.get_match_detail_info", return_value={
+        "start_time": 900, "duration": 100,
+        "players": [{"account_id": 42}, {"account_id": 99}],
+    })
+    @patch("common.enqueue_match", return_value=True)
+    @patch("common.get_match_outbox", return_value=None)
+    def test_match_details_expand_to_all_monitored_participants(
+        self, get_outbox, enqueue, get_detail, generate
+    ):
+        second = Player("同局玩家", 99, 76561197960265827, 100)
+        PLAYER_LIST.append(second)
+
+        with patch("common.time.time", return_value=1000), \
+             patch("common.time.monotonic", return_value=100):
+            common._queue_detected_matches({101: [self.tracked]})
+
+        generate.assert_called_once_with(
+            101, [self.tracked, second], match=get_detail.return_value,
+        )
+        enqueue.assert_called_once_with(101, "merged report", {42, 99})
+        self.assertEqual(common._post_match_cooldown_until[42], 700)
+        self.assertEqual(common._post_match_cooldown_until[99], 700)
+
+    @patch("common.DOTA2.get_active_dota_account_ids", return_value=[42])
+    @patch("common.time.monotonic", return_value=200)
+    def test_active_status_does_not_cancel_post_match_cooldown(
+        self, _monotonic, _active
+    ):
+        common._post_match_cooldown_until[42] = 700
+        common._next_poll_at[42] = 700
+
+        common.refresh_match_poll_priorities()
+
+        self.assertEqual(common._next_poll_at[42], 700)
 
     @patch("common.mark_match_failed")
     @patch("common.mark_match_attempt")

@@ -86,10 +86,12 @@ class Dota2Test(unittest.TestCase):
             "players": [
                 {"account_id": 42, "player_slot": 0, "kills": 8, "deaths": 0,
                  "assists": 12, "hero_id": 1, "hero_damage": 24000,
-                 "gold_per_min": 600, "xp_per_min": 700, "last_hits": 180},
+                 "gold_per_min": 600, "xp_per_min": 700, "last_hits": 180,
+                 "party_id": 7},
                 {"account_id": 43, "player_slot": 1, "kills": 4, "deaths": 3,
                  "assists": 15, "hero_id": 2, "hero_damage": 16000,
-                 "gold_per_min": 480, "xp_per_min": 560, "last_hits": 80},
+                 "gold_per_min": 480, "xp_per_min": 560, "last_hits": 80,
+                 "party_id": 7},
             ],
         }
         with patch.object(DOTA2, "get_match_detail_info", return_value=match), \
@@ -103,6 +105,39 @@ class Dota2Test(unittest.TestCase):
         self.assertIn("✅ 甲", report)
         self.assertIn("零死", report)
         self.assertNotIn("DOTA2 战报", report)
+
+    def test_same_team_without_party_id_is_not_called_a_party(self):
+        first = player("甲", 42, 76561197960265770, 122)
+        second = player("乙", 43, 76561197960265771, 122)
+        match = {
+            "match_id": 123, "start_time": 1_700_000_000, "duration": 1800,
+            "game_mode": 1, "lobby_type": 7, "radiant_win": True,
+            "players": [
+                {"account_id": 42, "player_slot": 0, "hero_id": 1},
+                {"account_id": 43, "player_slot": 1, "hero_id": 2},
+            ],
+        }
+        with patch('report_builder.choose_custom_comment', return_value=None), \
+                patch('report_builder.display_name', side_effect=lambda _id, name, _match: name), \
+                patch('report_builder.persist_and_summarize', return_value=[]):
+            report = DOTA2.generate_match_message(123, [first, second], match=match)
+
+        self.assertIn("发现2人同队同局：甲、乙", report)
+        self.assertNotIn("组队开黑", report)
+
+    def test_match_details_find_all_tracked_players(self):
+        tracked = [
+            player("甲", 42, 76561197960265770, 122),
+            player("乙", 43, 76561197960265771, 122),
+            player("不在本局", 99, 76561197960265827, 122),
+        ]
+        match = {'players': [
+            {'account_id': 42}, {'account_id': None}, {'account_id': 43},
+        ]}
+
+        found = DOTA2.get_tracked_players_in_match(match, tracked)
+
+        self.assertEqual([item.short_steamID for item in found], [42, 43])
 
 
 if __name__ == "__main__":
