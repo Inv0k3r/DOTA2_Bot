@@ -36,8 +36,8 @@ class GameFeaturesTest(unittest.TestCase):
     ):
         def add_risk(_group, _match, _start, _rows, **kwargs):
             kwargs['risk_events'].append({
-                'reason': 'loss_streak', 'target_nickname': '测试玩家',
-                'loss_streak': 3, 'bet_count': 2, 'refund': 300,
+                'reason': 'match_participant', 'target_nickname': '测试玩家',
+                'bet_count': 2, 'refund': 300,
             })
             return []
 
@@ -47,7 +47,7 @@ class GameFeaturesTest(unittest.TestCase):
         result = game_features.persist_and_summarize(101, 123, rows, [42, 99])
 
         self.assertTrue(any('竞猜风控' in line for line in result))
-        self.assertTrue(any('3连败' in line and '退回300点' in line for line in result))
+        self.assertTrue(any('同局参与者' in line and '退回300点' in line for line in result))
 
     @patch('game_features.get_player_streak', return_value=0)
     @patch('game_features.reward_bound_players', return_value=[{

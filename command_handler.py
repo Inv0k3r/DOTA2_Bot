@@ -397,10 +397,6 @@ def _prediction_odds(arguments):
     message = '🎲 {}｜近期 {}｜{}：赢 {:.2f} / 输 {:.2f}\n奖池：赢 {} / 输 {}'.format(
         tracked.nickname, record, label, odds['win'], odds['lose'],
         odds.get('win_pool', 0), odds.get('lose_pool', 0))
-    if odds.get('locked'):
-        message += '\n🛡️ 已{}连败，竞猜暂时锁定；赢一场后自动恢复。'.format(
-            odds['loss_streak']
-        )
     return message
 
 

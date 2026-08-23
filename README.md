@@ -213,7 +213,6 @@ python manage.py report 90045009 "示例玩家" --match-id 1234567890 --send
 - 每天首次发送 `@bot 签到` 获得 100 点普通竞猜积分；重复签到不会重复发放。
 - 可以同时竞猜不同玩家；同一目标在结算前再次下注会退回旧本金并改押。
 - 已绑定的群成员不能竞猜自己；绑定前已有的自押会自动撤销并退回本金，结算时也会再次校验。
-- 目标默认达到 3 连败后暂停竞猜，所有未结算下注自动退还；赢一场后自动恢复。可用 `PREDICTION_LOSS_STREAK_LIMIT` 调整阈值。
 - 赛后若发现下注者绑定的 Steam 账号也在该局中，这笔下注作废并退回本金；不依赖可能缺失的开黑/队伍标记。
 - 无人下注时，默认赔率由最近 20 场战绩按时间衰减加权计算；越近的比赛影响越大。
 - 有人下注后进入实时盘：押赢/押输的点数会与近期状态共同修正赔率。押某一边越多，该边赔率越低，另一边赔率越高；每次新增或修改下注都会重算所有待结算下注。
@@ -245,7 +244,6 @@ python manage.py report 90045009 "示例玩家" --match-id 1234567890 --send
 - `STEAM_HISTORY_CIRCUIT_THRESHOLD`：Steam 历史接口连续瞬时故障多少次后触发全局熔断，默认 3；HTTP 429 会立即熔断。
 - `STEAM_HISTORY_CIRCUIT_COOLDOWN`：Steam 历史接口全局熔断秒数，默认 300，恢复后玩家会错峰重试。
 - `OPENDOTA_RATE_LIMIT_BACKOFF`：OpenDota 返回限流响应后的全局冷却秒数，默认 300。
-- `PREDICTION_LOSS_STREAK_LIMIT`：连续失败多少场后暂停该玩家的竞猜，默认 3。
 - `PREDICTION_ODDS_HISTORY_MATCHES`：默认赔率参考的近期比赛场数，默认 20。
 - `PREDICTION_MARKET_LIQUIDITY`：盘口基础流动性，越大则单笔下注对赔率影响越小，默认 1000。
 - `PREDICTION_MARKET_PAYOUT_RATE`：盘口返还率，默认 0.90。

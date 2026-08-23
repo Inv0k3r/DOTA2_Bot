@@ -38,14 +38,7 @@ def persist_and_summarize(match_id, start_time, rows, participant_account_ids=No
     if risk_events:
         lines.extend(['', '🛡️ 竞猜风控'])
         for event in risk_events:
-            if event['reason'] == 'loss_streak':
-                lines.append(
-                    '• {} 已{}连败，暂停竞猜；{}笔未结算下注退回{}点。'.format(
-                        event['target_nickname'], event['loss_streak'],
-                        event['bet_count'], event['refund'],
-                    )
-                )
-            elif event['reason'] == 'match_participant':
+            if event['reason'] == 'match_participant':
                 lines.append(
                     '• 同局参与者不能押 {}；{}笔下注作废并退回{}点。'.format(
                         event['target_nickname'], event['bet_count'], event['refund'],

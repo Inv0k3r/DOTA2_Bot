@@ -731,22 +731,6 @@ def get_today_stats(group_id, since_timestamp):
     return [dict(zip(keys, row)) for row in rows]
 
 
-def get_prediction_loss_streak(group_id, target_account_id):
-    """Return the target's current consecutive-loss count in this group."""
-    history_limit = max(20, config.PREDICTION_LOSS_STREAK_LIMIT)
-    results = c.execute(
-        """SELECT won FROM match_stats WHERE group_id=? AND account_id=?
-           ORDER BY start_time DESC,match_id DESC LIMIT ?""",
-        (int(group_id), int(target_account_id), history_limit),
-    ).fetchall()
-    streak = 0
-    for (won,) in results:
-        if won:
-            break
-        streak += 1
-    return streak
-
-
 def _prediction_recent_form(group_id, target_account_id, exclude_match_id=None):
     conditions = ['group_id=?', 'account_id=?']
     params = [int(group_id), int(target_account_id)]
@@ -837,13 +821,7 @@ def refresh_all_prediction_markets():
 
 
 def get_prediction_odds(group_id, target_account_id):
-    market = _prediction_market(group_id, target_account_id)
-    loss_streak = get_prediction_loss_streak(group_id, target_account_id)
-    market.update({
-        'loss_streak': loss_streak,
-        'locked': loss_streak >= config.PREDICTION_LOSS_STREAK_LIMIT,
-    })
-    return market
+    return _prediction_market(group_id, target_account_id)
 
 
 def place_prediction_bet(group_id, user_id, user_name, target_account_id,
@@ -867,13 +845,6 @@ def place_prediction_bet(group_id, user_id, user_name, target_account_id,
         ).fetchone()
         if linked_player:
             raise ValueError('不能竞猜自己（你已绑定为 {}）'.format(linked_player[0]))
-        loss_streak = get_prediction_loss_streak(group_id, target_account_id)
-        if loss_streak >= config.PREDICTION_LOSS_STREAK_LIMIT:
-            raise ValueError(
-                '{} 已连续 {} 败，竞猜暂时锁定；赢一场后自动恢复'.format(
-                    target_nickname, loss_streak
-                )
-            )
         c.execute(
             """INSERT INTO prediction_scores(group_id,user_id,user_name,score,updated_at)
                VALUES (?,?,?,1000,?) ON CONFLICT(group_id,user_id) DO UPDATE SET
@@ -1261,7 +1232,7 @@ def _cancel_open_self_bets(group_id, user_id, account_id, now=None):
 
 def _enforce_prediction_risk_controls(group_id, match_id, match_start_time,
                                       match_rows, participant_account_ids, now):
-    """Apply loss-streak and same-match controls before any payout is made."""
+    """Void bets made by users whose bound account played in the same match."""
     group_id = int(group_id)
     match_id = int(match_id)
     participant_ids = {
@@ -1284,21 +1255,6 @@ def _enforce_prediction_risk_controls(group_id, match_id, match_start_time,
     for match_row in match_rows:
         account_id = int(match_row['account_id'])
         nickname = match_row['nickname']
-        loss_streak = get_prediction_loss_streak(group_id, account_id)
-        if loss_streak >= config.PREDICTION_LOSS_STREAK_LIMIT:
-            cancelled = _cancel_open_prediction_bets(
-                group_id, account_id, 'loss_streak', now=now,
-                settled_match_id=match_id,
-            )
-            if cancelled:
-                events.append({
-                    'reason': 'loss_streak', 'target_account_id': account_id,
-                    'target_nickname': nickname, 'loss_streak': loss_streak,
-                    'bet_count': len(cancelled),
-                    'refund': sum(item['stake'] for item in cancelled),
-                })
-            continue
-
         cancelled = []
         for bettor_id, _bettor_account_id in participant_links:
             cancelled.extend(_cancel_open_prediction_bets(
@@ -1431,33 +1387,6 @@ def settle_prediction_bets(group_id, match_id, match_start_time, match_rows,
                     'amount': commission_amount,
                 })
     return settled
-
-
-def reconcile_prediction_loss_streak_locks(group_id):
-    """Refund legacy open bets for targets already locked when the service starts."""
-    now = int(time.time())
-    events = []
-    with conn:
-        targets = c.execute(
-            """SELECT target_account_id,MAX(target_nickname) FROM prediction_bets
-               WHERE group_id=? AND status='open' GROUP BY target_account_id""",
-            (int(group_id),),
-        ).fetchall()
-        for account_id, nickname in targets:
-            loss_streak = get_prediction_loss_streak(group_id, account_id)
-            if loss_streak < config.PREDICTION_LOSS_STREAK_LIMIT:
-                continue
-            cancelled = _cancel_open_prediction_bets(
-                group_id, account_id, 'loss_streak', now=now
-            )
-            if cancelled:
-                events.append({
-                    'reason': 'loss_streak', 'target_account_id': int(account_id),
-                    'target_nickname': nickname, 'loss_streak': loss_streak,
-                    'bet_count': len(cancelled),
-                    'refund': sum(item['stake'] for item in cancelled),
-                })
-    return events
 
 
 def bind_prediction_player(group_id, user_id, user_name, account_id, nickname):

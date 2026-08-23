@@ -297,65 +297,26 @@ class CommonTest(unittest.TestCase):
         self.assertEqual(DBOper.get_open_prediction_bets(1, 92), [])
         self.assertEqual(DBOper.get_prediction_score(1, 92)['score'], 1000)
 
-    def test_three_loss_streak_locks_betting_until_next_win(self):
+    def test_loss_streak_does_not_block_or_cancel_betting(self):
         import DBOper
 
-        with patch.object(DBOper.config, 'PREDICTION_LOSS_STREAK_LIMIT', 3):
-            self._record_results(42, [False, False])
-            allowed = DBOper.place_prediction_bet(
-                1, 91, '群友', 42, '测试玩家', False, 100, 2.0, 101
-            )
-            self.assertEqual(allowed['balance'], 900)
+        self._record_results(42, [False, False, False], first_match_id=100)
+        placed = DBOper.place_prediction_bet(
+            1, 89, '押输的人', 42, '测试玩家', False, 100, 2.0, 102
+        )
+        risk_events = []
 
-            with DBOper.conn:
-                DBOper.c.execute(
-                    "UPDATE prediction_bets SET status='cancelled' WHERE id=?",
-                    (allowed['id'],),
-                )
-            self._record_results(42, [False], first_match_id=102)
-            with self.assertRaisesRegex(ValueError, '连续 3 败'):
-                DBOper.place_prediction_bet(
-                    1, 90, '群友2', 42, '测试玩家', False, 100, 2.0, 102
-                )
+        settled = DBOper.settle_prediction_bets(
+            1, 103, 9999999999,
+            [{'account_id': 42, 'nickname': '测试玩家', 'won': False}],
+            participant_account_ids=[42], risk_events=risk_events,
+        )
 
-            self._record_results(42, [True], first_match_id=103)
-            unlocked = DBOper.place_prediction_bet(
-                1, 90, '群友2', 42, '测试玩家', True, 100, 2.0, 103
-            )
-            self.assertEqual(unlocked['balance'], 900)
-
-    def test_third_loss_cancels_all_open_bets_before_payout(self):
-        import DBOper
-
-        with patch.object(DBOper.config, 'PREDICTION_LOSS_STREAK_LIMIT', 3):
-            self._record_results(42, [False, False])
-            DBOper.place_prediction_bet(
-                1, 89, '押输的人', 42, '测试玩家', False, 100, 2.0, 101
-            )
-            DBOper.place_prediction_bet(
-                1, 88, '押赢的人', 42, '测试玩家', True, 200, 2.0, 999
-            )
-            self._record_results(42, [False], first_match_id=102)
-            risk_events = []
-
-            settled = DBOper.settle_prediction_bets(
-                1, 102, 9999999999,
-                [{'account_id': 42, 'nickname': '测试玩家', 'won': False}],
-                participant_account_ids=[42], risk_events=risk_events,
-            )
-
-            self.assertEqual(settled, [])
-            self.assertEqual(risk_events[0]['reason'], 'loss_streak')
-            self.assertEqual(risk_events[0]['bet_count'], 2)
-            self.assertEqual(risk_events[0]['refund'], 300)
-            self.assertEqual(DBOper.get_prediction_score(1, 89)['score'], 1000)
-            self.assertEqual(DBOper.get_prediction_score(1, 88)['score'], 1000)
-            self.assertEqual(DBOper.get_prediction_score(1, 89)['wins'], 0)
-            self.assertEqual(DBOper.settle_prediction_bets(
-                1, 102, 9999999999,
-                [{'account_id': 42, 'nickname': '测试玩家', 'won': False}],
-            ), [])
-            self.assertEqual(DBOper.get_prediction_score(1, 89)['score'], 1000)
+        self.assertEqual(placed['balance'], 900)
+        self.assertEqual(len(settled), 1)
+        self.assertTrue(settled[0]['correct'])
+        self.assertEqual(risk_events, [])
+        self.assertNotIn('locked', DBOper.get_prediction_odds(1, 42))
 
     def test_same_match_participant_bet_is_voided_and_refunded(self):
         import DBOper
