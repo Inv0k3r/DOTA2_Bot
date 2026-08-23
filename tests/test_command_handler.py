@@ -39,13 +39,17 @@ class CommandHandlerTest(unittest.TestCase):
         send.assert_called_once()
 
     @patch('command_handler.send')
-    @patch('command_handler.disable_player', return_value=True)
-    def test_admin_can_remove_player(self, disable, send):
+    @patch('command_handler.common.forget_player')
+    @patch('command_handler.delete_player_data', return_value={
+        'refunded_bets': 0, 'refunded_score': 0,
+    })
+    def test_admin_can_remove_player(self, delete_data, forget, send):
         PLAYER_LIST.append(Player('测试玩家', 42, 76561197960265770, 100))
         event = dict(self.admin_event, message='删除监控 测试玩家')
         self.assertTrue(command_handler.handle_event(event))
         self.assertEqual(PLAYER_LIST, [])
-        disable.assert_called_once_with(42)
+        delete_data.assert_called_once_with(42)
+        forget.assert_called_once_with(42)
 
     @patch('command_handler.send')
     def test_member_cannot_change_players(self, send):

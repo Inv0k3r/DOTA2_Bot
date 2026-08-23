@@ -27,7 +27,12 @@ class CommonTest(unittest.TestCase):
     def setUp(self):
         import DBOper
         with DBOper.conn:
+            DBOper.c.execute('DELETE FROM playerInfo')
+            DBOper.c.execute('DELETE FROM removed_players')
+            DBOper.c.execute('DELETE FROM match_outbox')
             DBOper.c.execute('DELETE FROM match_stats')
+            DBOper.c.execute('DELETE FROM player_aliases')
+            DBOper.c.execute('DELETE FROM combo_names')
             DBOper.c.execute('DELETE FROM prediction_bets')
             DBOper.c.execute('DELETE FROM prediction_scores')
             DBOper.c.execute('DELETE FROM prediction_player_links')
@@ -81,6 +86,57 @@ class CommonTest(unittest.TestCase):
         self.assertEqual(player_ids, [42])
         self.assertEqual(DBOper.get_DOTA2_match_ID(42), 101)
         self.assertEqual(DBOper.get_match_outbox_status(101), 'sent')
+
+    def test_delete_player_clears_related_data_and_refunds_open_bets(self):
+        import DBOper
+
+        DBOper.insert_info(42, 76561197960265770, "测试玩家", 100)
+        DBOper.set_player_alias(1, 42, '外号', 100, 1)
+        DBOper.set_combo_name(1, [42, 99], '组合', 1)
+        self._record_results(42, [1], group_id=1)
+        DBOper.bind_prediction_player(1, 200, '本人', 42, '测试玩家')
+        DBOper.place_prediction_bet(1, 201, '竞猜者', 42, '测试玩家', 1, 250, 2.0, 100)
+        DBOper.enqueue_match(101, '待发送战报', [42, 99])
+
+        result = DBOper.delete_player_data(42)
+
+        self.assertEqual(result['refunded_bets'], 1)
+        self.assertEqual(result['refunded_score'], 250)
+        self.assertEqual(DBOper.get_prediction_score(1, 201)['score'], 1000)
+        for table, column in (
+            ('playerInfo', 'short_steamID'),
+            ('match_stats', 'account_id'),
+            ('player_aliases', 'account_id'),
+            ('prediction_bets', 'target_account_id'),
+            ('prediction_player_links', 'account_id'),
+        ):
+            count = DBOper.c.execute(
+                'SELECT COUNT(*) FROM {} WHERE {}=?'.format(table, column), (42,)
+            ).fetchone()[0]
+            self.assertEqual(count, 0, table)
+        self.assertIsNone(DBOper.get_combo_name(1, [42, 99]))
+        self.assertIsNone(DBOper.get_match_outbox(101))
+        self.assertTrue(DBOper.is_player_stored(42))
+
+        DBOper.upsert_player(42, 76561197960265770, '重新添加', 999)
+        self.assertEqual(DBOper.get_enabled_players()[0]['last_DOTA2_match_ID'], 999)
+        tombstones = DBOper.c.execute(
+            'SELECT COUNT(*) FROM removed_players WHERE short_steamID=42'
+        ).fetchone()[0]
+        self.assertEqual(tombstones, 0)
+
+    def test_forget_player_clears_runtime_state(self):
+        common._poll_failures[42] = 2
+        common._next_poll_at[42] = 100
+        common._priority_poll_until[42] = 200
+        common._active_dota_account_ids.add(42)
+
+        common.forget_player(42)
+
+        self.assertNotIn(42, common._poll_failures)
+        self.assertNotIn(42, common._next_poll_at)
+        self.assertNotIn(42, common._priority_poll_until)
+        self.assertNotIn(42, common._active_dota_account_ids)
 
     def test_sent_match_can_queue_addendum_for_late_player(self):
         import DBOper

@@ -37,6 +37,15 @@ _steam_history_failures = 0
 _steam_history_retry_at = 0.0
 
 
+def forget_player(account_id):
+    """Drop all process-local polling and presence state for a removed player."""
+    account_id = int(account_id)
+    _poll_failures.pop(account_id, None)
+    _next_poll_at.pop(account_id, None)
+    _priority_poll_until.pop(account_id, None)
+    _active_dota_account_ids.discard(account_id)
+
+
 def _is_transient_steam_history_failure(exc: Exception):
     message = str(exc)
     status = re.search(r"Steam match history returned HTTP (\d+)", message)

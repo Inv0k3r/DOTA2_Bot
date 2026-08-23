@@ -17,7 +17,7 @@ from DBOper import (
     create_prediction_loan,
     delete_comment_rule,
     delete_player_alias,
-    disable_player,
+    delete_player_data,
     get_comment_rules,
     get_enabled_players,
     get_match_id_by_message_id,
@@ -164,9 +164,15 @@ def _remove_player(arguments):
     tracked = _find_player(arguments)
     if not tracked:
         return '没有找到这个监控玩家：{}'.format(arguments.strip())
-    disable_player(tracked.short_steamID)
+    result = delete_player_data(tracked.short_steamID)
     PLAYER_LIST.remove(tracked)
-    return '已停止监控：{}'.format(tracked.nickname)
+    common.forget_player(tracked.short_steamID)
+    suffix = ''
+    if result['refunded_bets']:
+        suffix = '\n已撤销 {} 笔未结算竞猜并退还 {} 点。'.format(
+            result['refunded_bets'], result['refunded_score']
+        )
+    return '已删除监控及全部相关信息：{}{}'.format(tracked.nickname, suffix)
 
 
 def _list_players():

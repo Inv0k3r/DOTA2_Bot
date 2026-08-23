@@ -46,6 +46,12 @@ c.execute(
     "ON match_outbox(status, updated_at)"
 )
 c.execute(
+    """CREATE TABLE IF NOT EXISTS removed_players (
+        short_steamID INTEGER PRIMARY KEY,
+        deleted_at INTEGER NOT NULL
+    )"""
+)
+c.execute(
     """CREATE TABLE IF NOT EXISTS comment_rules (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         group_id INTEGER NOT NULL,
@@ -348,10 +354,14 @@ def insert_info(short_steamID, long_steamID, nickname, last_DOTA2_match_ID):
 
 
 def is_player_stored(short_steamID: int) -> bool:
-    c.execute("SELECT 1 FROM playerInfo WHERE short_steamID=?", (short_steamID,))
-    if len(c.fetchall()) == 0:
-        return False
-    return True
+    # A deletion tombstone prevents PLAYER_LIST_JSON defaults from silently
+    # recreating a player on the next service restart.
+    return c.execute(
+        """SELECT 1 FROM playerInfo WHERE short_steamID=?
+           UNION ALL
+           SELECT 1 FROM removed_players WHERE short_steamID=? LIMIT 1""",
+        (int(short_steamID), int(short_steamID)),
+    ).fetchone() is not None
 
 def get_playing_game(short_steamID):
     ret = c.execute(
@@ -370,24 +380,28 @@ def update_playing_game(short_steamID, gamename, timestamp):
 
 def upsert_player(short_steamID, long_steamID, nickname, last_DOTA2_match_ID):
     """Create or re-enable a player without losing an existing match cursor."""
-    row = c.execute(
-        "SELECT last_DOTA2_match_ID FROM playerInfo WHERE short_steamID=?",
-        (short_steamID,),
-    ).fetchone()
-    if row:
+    with conn:
+        row = c.execute(
+            "SELECT last_DOTA2_match_ID FROM playerInfo WHERE short_steamID=?",
+            (short_steamID,),
+        ).fetchone()
+        if row:
+            c.execute(
+                "UPDATE playerInfo SET long_steamID=?, nickname=?, enabled=1 "
+                "WHERE short_steamID=?",
+                (long_steamID, nickname, short_steamID),
+            )
+        else:
+            c.execute(
+                "INSERT INTO playerInfo "
+                "(short_steamID, long_steamID, nickname, last_DOTA2_match_ID, enabled) "
+                "VALUES (?, ?, ?, ?, 1)",
+                (short_steamID, long_steamID, nickname, last_DOTA2_match_ID),
+            )
         c.execute(
-            "UPDATE playerInfo SET long_steamID=?, nickname=?, enabled=1 "
-            "WHERE short_steamID=?",
-            (long_steamID, nickname, short_steamID),
+            "DELETE FROM removed_players WHERE short_steamID=?",
+            (int(short_steamID),),
         )
-    else:
-        c.execute(
-            "INSERT INTO playerInfo "
-            "(short_steamID, long_steamID, nickname, last_DOTA2_match_ID, enabled) "
-            "VALUES (?, ?, ?, ?, 1)",
-            (short_steamID, long_steamID, nickname, last_DOTA2_match_ID),
-        )
-    conn.commit()
     return row[0] if row else last_DOTA2_match_ID
 
 
@@ -399,6 +413,97 @@ def disable_player(short_steamID):
     changed = c.rowcount > 0
     conn.commit()
     return changed
+
+
+def delete_player_data(short_steamID):
+    """Permanently remove data keyed to one tracked Steam account.
+
+    Open bets are refunded before their rows are removed. Pending reports that
+    mention the player are discarded so the next poll can rebuild them for any
+    remaining participants. Sent shared outbox rows keep their delivery marker,
+    but no longer retain the deleted account ID.
+    """
+    account_id = int(short_steamID)
+    now = int(time.time())
+    refunded = []
+    deleted = {}
+    with conn:
+        groups_with_open_bets = c.execute(
+            """SELECT DISTINCT group_id FROM prediction_bets
+               WHERE target_account_id=? AND status='open'""",
+            (account_id,),
+        ).fetchall()
+        for (group_id,) in groups_with_open_bets:
+            refunded.extend(_cancel_open_prediction_bets(
+                group_id, account_id, 'player_removed', now=now,
+            ))
+
+        for table, column in (
+            ('match_stats', 'account_id'),
+            ('player_aliases', 'account_id'),
+            ('prediction_bets', 'target_account_id'),
+            ('prediction_player_links', 'account_id'),
+            ('prediction_commissions', 'account_id'),
+            ('prediction_game_rewards', 'account_id'),
+        ):
+            c.execute(
+                'DELETE FROM {} WHERE {}=?'.format(table, column),
+                (account_id,),
+            )
+            deleted[table] = c.rowcount
+
+        combo_rows = c.execute(
+            "SELECT group_id,player_ids FROM combo_names"
+        ).fetchall()
+        combo_keys = []
+        for group_id, player_ids in combo_rows:
+            try:
+                contains_player = account_id in {
+                    int(value) for value in json.loads(player_ids)
+                }
+            except (TypeError, ValueError, json.JSONDecodeError):
+                contains_player = False
+            if contains_player:
+                combo_keys.append((int(group_id), player_ids))
+        c.executemany(
+            "DELETE FROM combo_names WHERE group_id=? AND player_ids=?",
+            combo_keys,
+        )
+        deleted['combo_names'] = len(combo_keys)
+
+        outbox_rows = c.execute(
+            "SELECT match_id,player_ids,status FROM match_outbox"
+        ).fetchall()
+        touched_outbox = 0
+        for match_id, player_ids, status in outbox_rows:
+            try:
+                ids = [int(value) for value in json.loads(player_ids)]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if account_id not in ids:
+                continue
+            remaining = [value for value in ids if value != account_id]
+            if status == 'pending' or not remaining:
+                c.execute("DELETE FROM match_outbox WHERE match_id=?", (match_id,))
+            else:
+                c.execute(
+                    "UPDATE match_outbox SET player_ids=?,updated_at=? WHERE match_id=?",
+                    (json.dumps(sorted(set(remaining))), now, int(match_id)),
+                )
+            touched_outbox += 1
+        deleted['match_outbox'] = touched_outbox
+
+        c.execute("DELETE FROM playerInfo WHERE short_steamID=?", (account_id,))
+        deleted['playerInfo'] = c.rowcount
+        c.execute(
+            "INSERT OR REPLACE INTO removed_players(short_steamID,deleted_at) VALUES (?,?)",
+            (account_id, now),
+        )
+    return {
+        'deleted': deleted,
+        'refunded_bets': len(refunded),
+        'refunded_score': sum(item['stake'] for item in refunded),
+    }
 
 
 def get_enabled_players():
