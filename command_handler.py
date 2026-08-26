@@ -414,7 +414,7 @@ def _create_loan(arguments, event):
         return '贷款失败：{}'.format(exc)
     due = time.strftime('%m-%d %H:%M', time.localtime(result['due_at']))
     return ('🏦 放款成功｜到账 {} 点｜应还 {} 点（利息 {}）｜{} 前还款\n'
-            '当前余额 {} 点；逾期将死亡 3 天。').format(
+            '当前余额 {} 点；逾期将死亡至下一个0点。').format(
         result['principal'], result['total_due'], result['interest'], due,
         result['balance'],
     )
@@ -433,11 +433,7 @@ def _repay_loan(event):
 def _loan_status(event):
     status = get_prediction_loan_status(config.QQ_GROUP_ID, event.get('user_id', 0))
     if status['death']:
-        remaining = max(0, status['death']['death_until'] - status['now'])
-        days, remainder = divmod(remaining, 86400)
-        hours = remainder // 3600
-        remaining_text = '{}天{}小时'.format(days, hours) if days else '{}小时'.format(max(1, hours))
-        return '💀 竞猜账号死亡中｜约 {} 后自动复活'.format(remaining_text)
+        return '💀 竞猜账号死亡中｜下一个0点原地复活'
     loan = status['loan']
     if not loan or loan['status'] != 'open':
         return '你目前没有待还贷款。\n格式：@bot 贷款 <点数>'

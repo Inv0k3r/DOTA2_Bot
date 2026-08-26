@@ -7,7 +7,9 @@ import time
 import config
 from player import PLAYER_LIST, Player
 from DBOper import (
-    enforce_overdue_prediction_loans, get_enabled_players, is_player_stored, insert_info,
+    enforce_overdue_prediction_loans, get_due_prediction_revivals,
+    get_enabled_players, is_player_stored, insert_info,
+    mark_prediction_revival_failed, mark_prediction_revival_sent,
 )
 from common import refresh_match_poll_priorities, steam_id_convert_32_to_64, update_and_send_message_DOTA2
 from event_receiver import process_pending_events, start_event_server
@@ -15,6 +17,33 @@ from message_sender import message as send
 import DOTA2
 
 logger = logging.getLogger(__name__)
+_next_loan_state_check_at = 0.0
+
+
+def process_prediction_loan_state(force=False):
+    """Apply defaults and reliably announce midnight revivals."""
+    global _next_loan_state_check_at
+    monotonic_now = time.monotonic()
+    if not force and monotonic_now < _next_loan_state_check_at:
+        return
+    _next_loan_state_check_at = monotonic_now + 30
+    defaults = enforce_overdue_prediction_loans()
+    for item in defaults:
+        logger.warning("竞猜贷款逾期：QQ %s，死亡至 %s", item['user_id'], item['death_until'])
+    for item in get_due_prediction_revivals():
+        try:
+            send(
+                '☀️ [CQ:at,qq={}] 0点已到，竞猜账号原地复活！现在可以继续签到、贷款和下注了。'.format(
+                    int(item['user_id'])
+                ),
+                group_id=int(item['group_id']),
+            )
+        except Exception as exc:
+            mark_prediction_revival_failed(item['loan_id'], exc)
+            logger.warning("QQ %s 复活通知发送失败，稍后重试: %s", item['user_id'], exc)
+        else:
+            mark_prediction_revival_sent(item['loan_id'])
+            logger.info("QQ %s 已于0点复活并通知群聊", item['user_id'])
 
 
 def init():
@@ -36,15 +65,11 @@ def init():
     PLAYER_LIST.clear()
     for row in get_enabled_players():
         PLAYER_LIST.append(Player(**row))
-    defaults = enforce_overdue_prediction_loans()
-    if defaults:
-        logger.warning("启动时处理了 %s 笔逾期竞猜贷款", len(defaults))
+    process_prediction_loan_state(force=True)
 
 
 def update(player_num: int):
-    defaults = enforce_overdue_prediction_loans()
-    for item in defaults:
-        logger.warning("竞猜贷款逾期：QQ %s，死亡至 %s", item['user_id'], item['death_until'])
+    process_prediction_loan_state()
     refresh_match_poll_priorities()
     update_and_send_message_DOTA2()
     # dota每日请求限制100,000次
@@ -72,7 +97,7 @@ def main():
         while True:
             player_num = len(PLAYER_LIST)
             if player_num == 0:
-                enforce_overdue_prediction_loans()
+                process_prediction_loan_state()
                 process_pending_events()
                 time.sleep(1)
                 continue

@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 import uuid
 from unittest.mock import Mock, patch
@@ -41,6 +42,7 @@ class CommonTest(unittest.TestCase):
             DBOper.c.execute('DELETE FROM prediction_commissions')
             DBOper.c.execute('DELETE FROM prediction_loans')
             DBOper.c.execute('DELETE FROM prediction_deaths')
+            DBOper.c.execute('DELETE FROM prediction_revival_notifications')
         PLAYER_LIST.clear()
         common._poll_failures.clear()
         common._next_poll_at.clear()
@@ -206,7 +208,7 @@ class CommonTest(unittest.TestCase):
         import DBOper
 
         with patch.object(DBOper.config, 'PREDICTION_LOAN_TERM_SECONDS', 100), \
-             patch.object(DBOper.config, 'PREDICTION_DEATH_SECONDS', 300):
+             patch.object(DBOper, '_next_local_midnight', return_value=1400):
             DBOper.create_prediction_loan(1, 702, '老赖', 500, now=1000)
             with DBOper.conn:
                 DBOper.c.execute(
@@ -233,6 +235,45 @@ class CommonTest(unittest.TestCase):
             revived = DBOper.claim_prediction_daily_checkin(1, 702, '老赖', now=1400)
             self.assertTrue(revived['claimed'])
             self.assertIsNone(DBOper.get_prediction_loan_status(1, 702, now=1400)['death'])
+            due = DBOper.get_due_prediction_revivals(now=1400)
+            self.assertEqual((due[0]['user_id'], due[0]['revive_at']), (702, 1400))
+            self.assertTrue(DBOper.mark_prediction_revival_sent(due[0]['loan_id'], now=1400))
+            self.assertEqual(DBOper.get_due_prediction_revivals(now=1400), [])
+
+    def test_prediction_revival_is_next_local_midnight(self):
+        import DBOper
+
+        before_midnight = int(time.mktime((2026, 8, 26, 23, 59, 0, 0, 0, -1)))
+        expected = int(time.mktime((2026, 8, 27, 0, 0, 0, 0, 0, -1)))
+        self.assertEqual(DBOper._next_local_midnight(before_midnight), expected)
+
+    def test_prediction_revival_notification_retries_after_failure(self):
+        import DBOper
+
+        with patch.object(DBOper.config, 'PREDICTION_LOAN_TERM_SECONDS', 100), \
+             patch.object(DBOper, '_next_local_midnight', return_value=1400):
+            loan = DBOper.create_prediction_loan(1, 703, '重生者', 100, now=1000)
+            DBOper.enforce_overdue_prediction_loans(now=1100)
+        self.assertTrue(DBOper.mark_prediction_revival_failed(loan['id'], 'offline', now=1400))
+        self.assertEqual(DBOper.get_due_prediction_revivals(now=1429), [])
+        self.assertEqual(DBOper.get_due_prediction_revivals(now=1430)[0]['attempts'], 1)
+
+    def test_midnight_revival_sends_group_mention_once(self):
+        import run
+
+        revival = {
+            'loan_id': 9, 'group_id': 1, 'user_id': 703,
+            'user_name': '重生者', 'revive_at': 1400, 'attempts': 0,
+        }
+        with patch.object(run, 'enforce_overdue_prediction_loans', return_value=[]), \
+             patch.object(run, 'get_due_prediction_revivals', return_value=[revival]), \
+             patch.object(run, 'mark_prediction_revival_sent') as marked, \
+             patch.object(run, 'send') as sent:
+            run.process_prediction_loan_state(force=True)
+        sent.assert_called_once()
+        self.assertIn('[CQ:at,qq=703]', sent.call_args.args[0])
+        self.assertEqual(sent.call_args.kwargs['group_id'], 1)
+        marked.assert_called_once_with(9)
 
     def test_prediction_does_not_settle_against_old_match(self):
         import DBOper

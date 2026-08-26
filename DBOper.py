@@ -10,6 +10,15 @@ from pathlib import Path
 import config
 from player import Player, PLAYER_LIST
 
+
+def _next_local_midnight(timestamp):
+    """Return the first local 00:00 strictly after timestamp's calendar day."""
+    local = time.localtime(int(timestamp))
+    return int(time.mktime((
+        local.tm_year, local.tm_mon, local.tm_mday + 1,
+        0, 0, 0, 0, 0, -1,
+    )))
+
 DATABASE_PATH = Path(
     os.getenv('DATABASE_PATH', str(Path(__file__).resolve().with_name('playerInfo.db')))
 )
@@ -262,6 +271,50 @@ c.execute(
         PRIMARY KEY (group_id,user_id)
     )"""
 )
+c.execute(
+    """CREATE TABLE IF NOT EXISTS prediction_revival_notifications (
+        loan_id INTEGER PRIMARY KEY,
+        group_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        user_name TEXT NOT NULL,
+        revive_at INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at INTEGER NOT NULL,
+        sent_at INTEGER
+    )"""
+)
+c.execute(
+    "CREATE INDEX IF NOT EXISTS idx_prediction_revival_due "
+    "ON prediction_revival_notifications(status,revive_at,next_attempt_at)"
+)
+# Migrate already-active three-day deaths to the first midnight after their
+# original loan deadline, and give them the same durable notification path.
+legacy_deaths = c.execute(
+    """SELECT d.group_id,d.user_id,d.loan_id,d.death_until,d.created_at,
+              COALESCE(l.user_name,s.user_name,CAST(d.user_id AS TEXT)),l.due_at
+       FROM prediction_deaths d
+       LEFT JOIN prediction_loans l ON l.id=d.loan_id
+       LEFT JOIN prediction_scores s ON s.group_id=d.group_id AND s.user_id=d.user_id"""
+).fetchall()
+for group_id, user_id, loan_id, old_until, created_at, user_name, due_at in legacy_deaths:
+    if loan_id is None:
+        continue
+    midnight = _next_local_midnight(due_at if due_at is not None else created_at)
+    revive_at = min(int(old_until), midnight)
+    c.execute(
+        "UPDATE prediction_deaths SET death_until=? WHERE group_id=? AND user_id=?",
+        (revive_at, int(group_id), int(user_id)),
+    )
+    c.execute(
+        """INSERT OR IGNORE INTO prediction_revival_notifications
+           (loan_id,group_id,user_id,user_name,revive_at,status,created_at)
+           VALUES (?,?,?,?,?,'pending',?)""",
+        (int(loan_id), int(group_id), int(user_id), user_name,
+         revive_at, int(created_at)),
+    )
 c.execute(
     """DELETE FROM prediction_game_rewards WHERE rowid NOT IN (
            SELECT MAX(rowid) FROM prediction_game_rewards
@@ -996,7 +1049,7 @@ def _enforce_prediction_loan_default(group_id, user_id, now):
            WHERE group_id=? AND user_id=?""",
         (int(now), int(group_id), int(user_id)),
     )
-    death_until = int(now) + int(config.PREDICTION_DEATH_SECONDS)
+    death_until = _next_local_midnight(row[5])
     c.execute(
         """INSERT INTO prediction_deaths
            (group_id,user_id,death_until,reason,loan_id,created_at)
@@ -1005,6 +1058,12 @@ def _enforce_prediction_loan_default(group_id, user_id, now):
              death_until=MAX(prediction_deaths.death_until,excluded.death_until),
              reason=excluded.reason,loan_id=excluded.loan_id,created_at=excluded.created_at""",
         (int(group_id), int(user_id), death_until, 'loan_default', loan_id, int(now)),
+    )
+    c.execute(
+        """INSERT OR IGNORE INTO prediction_revival_notifications
+           (loan_id,group_id,user_id,user_name,revive_at,status,created_at)
+           VALUES (?,?,?,?,?,'pending',?)""",
+        (loan_id, int(group_id), int(user_id), row[1], death_until, int(now)),
     )
     return {
         'loan_id': loan_id, 'user_id': int(user_id), 'user_name': row[1],
@@ -1028,6 +1087,57 @@ def enforce_overdue_prediction_loans(now=None):
             if event:
                 events.append(event)
     return events
+
+
+def get_due_prediction_revivals(now=None, limit=20):
+    now = int(time.time()) if now is None else int(now)
+    rows = c.execute(
+        """SELECT loan_id,group_id,user_id,user_name,revive_at,attempts
+           FROM prediction_revival_notifications
+           WHERE status='pending' AND revive_at<=? AND next_attempt_at<=?
+           ORDER BY revive_at,loan_id LIMIT ?""",
+        (now, now, int(limit)),
+    ).fetchall()
+    keys = ('loan_id','group_id','user_id','user_name','revive_at','attempts')
+    return [dict(zip(keys, row)) for row in rows]
+
+
+def mark_prediction_revival_sent(loan_id, now=None):
+    now = int(time.time()) if now is None else int(now)
+    with conn:
+        c.execute(
+            """UPDATE prediction_revival_notifications
+               SET status='sent',sent_at=?,last_error=NULL
+               WHERE loan_id=? AND status='pending'""",
+            (now, int(loan_id)),
+        )
+        changed = bool(c.rowcount)
+        if changed:
+            c.execute(
+                "DELETE FROM prediction_deaths WHERE loan_id=? AND death_until<=?",
+                (int(loan_id), now),
+            )
+        return changed
+
+
+def mark_prediction_revival_failed(loan_id, error, now=None):
+    now = int(time.time()) if now is None else int(now)
+    row = c.execute(
+        "SELECT attempts FROM prediction_revival_notifications WHERE loan_id=? AND status='pending'",
+        (int(loan_id),),
+    ).fetchone()
+    if not row:
+        return False
+    attempts = int(row[0]) + 1
+    delay = min(3600, 30 * (2 ** min(attempts - 1, 7)))
+    with conn:
+        c.execute(
+            """UPDATE prediction_revival_notifications
+               SET attempts=?,next_attempt_at=?,last_error=?
+               WHERE loan_id=? AND status='pending'""",
+            (attempts, now + delay, str(error)[:500], int(loan_id)),
+        )
+        return bool(c.rowcount)
 
 
 def enforce_prediction_loan_for_user(group_id, user_id, now=None):

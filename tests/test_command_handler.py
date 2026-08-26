@@ -206,6 +206,7 @@ class CommandHandlerTest(unittest.TestCase):
             config.QQ_GROUP_ID, 321, '借款人', 2000,
         )
         self.assertIn('应还 2200', send.call_args.args[0])
+        self.assertIn('下一个0点', send.call_args.args[0])
 
     @patch('command_handler.send')
     @patch('command_handler.claim_prediction_daily_checkin', return_value={
