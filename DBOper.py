@@ -799,22 +799,25 @@ def _prediction_recent_form(group_id, target_account_id, exclude_match_id=None):
         ),
         tuple(params),
     ).fetchall()
-    # Recent games matter more, while a small 50/50 prior keeps new players and
-    # short streaks from producing extreme prices.
+    # This is deliberately an entertainment-oriented line: the newest games
+    # matter much more, while only a light 50/50 prior tempers tiny samples.
     weighted_wins = 0.0
     total_weight = 0.0
     for index, (won,) in enumerate(results):
-        weight = 0.90 ** index
+        weight = config.PREDICTION_ODDS_RECENCY_DECAY ** index
         total_weight += weight
         weighted_wins += weight * (1 if won else 0)
-    prior_weight = 4.0
+    prior_weight = config.PREDICTION_ODDS_PRIOR_WEIGHT
     probability = (prior_weight * 0.5 + weighted_wins) / (
         prior_weight + total_weight
     )
     return {
         'games': len(results),
         'wins': sum(1 for (won,) in results if won),
-        'win_probability': min(0.80, max(0.20, probability)),
+        'win_probability': min(
+            1.0 - config.PREDICTION_ODDS_PROBABILITY_FLOOR,
+            max(config.PREDICTION_ODDS_PROBABILITY_FLOOR, probability),
+        ),
     }
 
 
@@ -851,7 +854,10 @@ def _prediction_market(group_id, target_account_id, bets=None,
 
     def offered(probability):
         raw = config.PREDICTION_MARKET_PAYOUT_RATE / probability
-        return round(min(6.0, max(config.PREDICTION_MARKET_MIN_ODDS, raw)), 2)
+        return round(min(
+            config.PREDICTION_MARKET_MAX_ODDS,
+            max(config.PREDICTION_MARKET_MIN_ODDS, raw),
+        ), 2)
 
     return {
         'games': form['games'], 'wins': form['wins'],

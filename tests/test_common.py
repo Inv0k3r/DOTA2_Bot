@@ -390,14 +390,23 @@ class CommonTest(unittest.TestCase):
         self.assertEqual(odds['games'], 4)
         self.assertLess(odds['win'], odds['lose'])
 
+    def test_long_recent_streak_produces_entertainment_odds(self):
+        import DBOper
+
+        self._record_results(42, [True] * 10, group_id=1)
+        odds = DBOper.get_prediction_odds(1, 42)
+        self.assertEqual(odds['win'], 1.30)
+        self.assertGreaterEqual(odds['lose'], 6.0)
+        self.assertLessEqual(odds['lose'], 8.0)
+
     def test_large_pool_cannot_overwhelm_recent_form_or_drop_below_floor(self):
         import DBOper
 
         self._record_results(42, [True] * 20, group_id=1)
-        with patch.object(DBOper.config, 'PREDICTION_MARKET_MAX_POOL_INFLUENCE', 0.20), \
+        with patch.object(DBOper.config, 'PREDICTION_MARKET_MAX_POOL_INFLUENCE', 0.10), \
              patch.object(DBOper.config, 'PREDICTION_MARKET_MIN_ODDS', 1.30):
             market = DBOper._prediction_market(1, 42, bets=[(1, 1000000)])
-        self.assertLessEqual(market['pool_influence'], 0.20)
+        self.assertLessEqual(market['pool_influence'], 0.10)
         self.assertGreaterEqual(market['win'], 1.30)
         self.assertGreater(market['lose'], market['win'])
 
