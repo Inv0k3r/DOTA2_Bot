@@ -204,6 +204,7 @@ python manage.py report 90045009 "示例玩家" --match-id 1234567890 --send
 @bot 我的竞猜
 @bot 我的积分
 @bot 竞猜榜
+@bot 赠送 @群友 100
 @bot 贷款 500
 @bot 我的贷款
 @bot 还款
@@ -225,6 +226,7 @@ python manage.py report 90045009 "示例玩家" --match-id 1234567890 --send
 - `@bot 竞猜榜` 按可用点数排行，并显示胜负、命中率和竞猜净收益。
 - 结算直接复用战报已经获取的比赛数据，不会增加 Steam 或 OpenDota API 请求。
 - 竞猜和积分保存在 SQLite 中，服务重启或战报重试不会重复结算。
+- 可用 `@bot 赠送 @群友 <点数>` 转赠普通竞猜积分，单笔默认上限 100000 点。不能赠送给自己，有未还贷款、赠送者死亡或余额不足时拒绝；接收方死亡时仍可收到，但只能在复活后使用。每笔转账保留流水，并按群消息 ID 防止重复扣款。
 - 同一比赛若较晚才识别到其他监控玩家，会发送仅包含新增玩家的补充战报，不会重复结算已有玩家。
 - 每次可贷款 100–2000 点，24 小时内一次性归还本金和固定 10% 利息；同一时间只能有一笔未还贷款。
 - 贷款逾期后会撤销借款人的未结算下注并清空普通竞猜余额，竞猜账号“死亡”至下一个本地 0 点。死亡期间不能签到、贷款或下注，到点后自动原地复活并在群里发送提示。
@@ -259,6 +261,7 @@ python manage.py report 90045009 "示例玩家" --match-id 1234567890 --send
 - `PREDICTION_GAME_LOSS_REWARD`：绑定玩家每场落败奖励，默认 50。
 - `PREDICTION_UPSET_COMMISSION_RATE`：玩家打脸“押输”下注时获得的本金池提成比例，默认 0.10。
 - `PREDICTION_LOAN_MIN` / `PREDICTION_LOAN_MAX`：单笔贷款范围，默认 100–2000。
+- `PREDICTION_TRANSFER_MAX`：单笔积分赠送上限，默认 100000。
 - `PREDICTION_LOAN_INTEREST_RATE`：固定贷款利率，默认 0.10。
 - `PREDICTION_LOAN_TERM_SECONDS`：还款期限，默认 86400 秒。
 

@@ -32,6 +32,7 @@ from DBOper import (
     set_combo_name,
     set_player_alias,
     set_comment_rule_enabled,
+    transfer_prediction_score,
     upsert_player,
     unbind_prediction_player,
 )
@@ -354,10 +355,12 @@ def _prediction_score(event):
     net = score['returned'] - score['wagered']
     return ('🎲 {}｜余额 {}点｜{}胜{}负｜命中率 {:.0f}%\n'
             '累计下注 {}｜累计返还 {}｜竞猜净收益 {:+d}\n'
-            '签到奖励 {}｜完赛奖励 {}｜反向提成 {}').format(
+            '签到奖励 {}｜完赛奖励 {}｜反向提成 {}\n'
+            '累计送出 {}｜累计收到 {}').format(
         score['user_name'], score['score'], score['wins'], score['losses'], rate,
         score['wagered'], score['returned'], net, score.get('checkin_earned', 0),
-        score['game_earned'], score.get('commission_earned', 0))
+        score['game_earned'], score.get('commission_earned', 0),
+        score.get('transfer_sent', 0), score.get('transfer_received', 0))
 
 
 def _daily_checkin(event):
@@ -370,6 +373,30 @@ def _daily_checkin(event):
         )
     return '📅 今天已经签过到了｜当前余额 {}点，明天再来。'.format(
         result['balance']
+    )
+
+
+def _transfer_score(arguments, event):
+    recipient_id = _mentioned_user(event)
+    amount_text = arguments.strip()
+    if recipient_id is None or not re.fullmatch(r'\d+', amount_text):
+        return '格式：@bot 赠送 @群友 <点数>\n示例：@bot 赠送 @群友 100'
+    try:
+        result = transfer_prediction_score(
+            config.QQ_GROUP_ID, event.get('user_id', 0), _sender_name(event),
+            recipient_id, int(amount_text),
+            source_message_id=event.get('message_id'),
+        )
+    except ValueError as exc:
+        return '赠送失败：{}'.format(exc)
+    if result['duplicate']:
+        return '这笔赠送已经处理过了，没有重复扣款｜当前余额 {}点'.format(
+            result['balance']
+        )
+    return ('🎁 赠送成功｜向 [CQ:at,qq={}] 转入 {}点｜你的余额 {}点｜'
+            '对方余额 {}点').format(
+        recipient_id, result['amount'], result['balance'],
+        result['recipient_balance'],
     )
 
 
@@ -528,6 +555,7 @@ def _help_text():
         '@bot 赔率 <玩家>\n'
         '@bot 签到（每日 +{} 竞猜积分）\n'
         '@bot 我的竞猜 / 我的积分 / 竞猜榜\n'
+        '@bot 赠送 @群友 <点数>\n'
         '@bot 贷款 <点数>（{}–{}，24小时利息10%）\n'
         '@bot 还款 / 我的贷款\n'
         '管理员：@bot 绑定玩家 @群友 <监控玩家> / 取消绑定 @群友\n'
@@ -572,6 +600,10 @@ def handle_event(event):
         return True
     if _was_at_bot(event) and text == '签到':
         send(_daily_checkin(event), group_id=config.QQ_GROUP_ID)
+        return True
+    if _was_at_bot(event) and (text == '赠送' or text.startswith('赠送 ')):
+        send(_transfer_score(text[len('赠送'):].strip(), event),
+             group_id=config.QQ_GROUP_ID)
         return True
     if _was_at_bot(event) and (text == '贷款' or text.startswith('贷款 ')):
         send(_create_loan(text[len('贷款'):].strip(), event), group_id=config.QQ_GROUP_ID)

@@ -43,6 +43,7 @@ class CommonTest(unittest.TestCase):
             DBOper.c.execute('DELETE FROM prediction_loans')
             DBOper.c.execute('DELETE FROM prediction_deaths')
             DBOper.c.execute('DELETE FROM prediction_revival_notifications')
+            DBOper.c.execute('DELETE FROM prediction_transfers')
         PLAYER_LIST.clear()
         common._poll_failures.clear()
         common._next_poll_at.clear()
@@ -187,6 +188,68 @@ class CommonTest(unittest.TestCase):
         self.assertEqual(paid['balance'], 800)
         self.assertEqual(DBOper.get_prediction_loan_status(1, 700, now=1002)['loan']['status'],
                          'repaid')
+
+    def test_prediction_score_transfer_is_atomic_and_deduplicated(self):
+        import DBOper
+
+        first = DBOper.transfer_prediction_score(
+            1, 710, '赠送者', 711, 250, source_message_id=9001, now=1000
+        )
+        repeated = DBOper.transfer_prediction_score(
+            1, 710, '赠送者', 711, 250, source_message_id=9001, now=1001
+        )
+        self.assertFalse(first['duplicate'])
+        self.assertTrue(repeated['duplicate'])
+        self.assertEqual(DBOper.get_prediction_score(1, 710)['score'], 750)
+        self.assertEqual(DBOper.get_prediction_score(1, 711)['score'], 1250)
+        self.assertEqual(DBOper.get_prediction_score(1, 710)['transfer_sent'], 250)
+        self.assertEqual(DBOper.get_prediction_score(1, 711)['transfer_received'], 250)
+        self.assertEqual(
+            DBOper.c.execute('SELECT COUNT(1) FROM prediction_transfers').fetchone()[0], 1
+        )
+
+    def test_prediction_score_transfer_rejects_self_dead_or_insufficient_sender(self):
+        import DBOper
+
+        with self.assertRaisesRegex(ValueError, '自己'):
+            DBOper.transfer_prediction_score(1, 712, '自己', 712, 1, now=1000)
+        with self.assertRaisesRegex(ValueError, '余额不足'):
+            DBOper.transfer_prediction_score(1, 712, '穷人', 713, 1001, now=1000)
+        with DBOper.conn:
+            DBOper.c.execute(
+                """INSERT INTO prediction_deaths
+                   (group_id,user_id,death_until,reason,loan_id,created_at)
+                   VALUES (1,712,2000,'loan_default',NULL,1000)"""
+            )
+        with self.assertRaisesRegex(ValueError, '已死亡'):
+            DBOper.transfer_prediction_score(1, 712, '死者', 713, 1, now=1001)
+
+    def test_prediction_score_transfer_cannot_launder_open_loan(self):
+        import DBOper
+
+        DBOper.create_prediction_loan(1, 715, '借款人', 500, now=1000)
+        with self.assertRaisesRegex(ValueError, '贷款未还'):
+            DBOper.transfer_prediction_score(1, 715, '借款人', 716, 500, now=1001)
+        self.assertEqual(DBOper.get_prediction_score(1, 715)['score'], 1500)
+        self.assertEqual(DBOper.get_prediction_score(1, 716)['score'], 1000)
+
+    def test_dead_recipient_can_receive_points_for_after_revival(self):
+        import DBOper
+
+        death_until = int(time.time()) + 1000
+        with DBOper.conn:
+            DBOper.c.execute(
+                """INSERT INTO prediction_deaths
+                   (group_id,user_id,death_until,reason,loan_id,created_at)
+                   VALUES (1,714,?,'loan_default',NULL,?)""",
+                (death_until, int(time.time())),
+            )
+        result = DBOper.transfer_prediction_score(1, 713, '赠送者', 714, 100, now=1001)
+        self.assertEqual(result['recipient_balance'], 1100)
+        with self.assertRaisesRegex(ValueError, '已死亡'):
+            DBOper.place_prediction_bet(
+                1, 714, '接收者', 42, '测试玩家', True, 1, 2.0, 100
+            )
 
     def test_prediction_loan_rejects_second_and_bad_amount(self):
         import DBOper

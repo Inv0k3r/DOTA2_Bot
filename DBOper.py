@@ -188,6 +188,8 @@ c.execute(
         game_earned INTEGER NOT NULL DEFAULT 0,
         checkin_earned INTEGER NOT NULL DEFAULT 0,
         commission_earned INTEGER NOT NULL DEFAULT 0,
+        transfer_sent INTEGER NOT NULL DEFAULT 0,
+        transfer_received INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (group_id,user_id)
     )"""
@@ -288,6 +290,23 @@ c.execute(
     )"""
 )
 c.execute(
+    """CREATE TABLE IF NOT EXISTS prediction_transfers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        sender_id INTEGER NOT NULL,
+        sender_name TEXT NOT NULL,
+        recipient_id INTEGER NOT NULL,
+        recipient_name TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        source_message_id INTEGER,
+        created_at INTEGER NOT NULL
+    )"""
+)
+c.execute(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_prediction_transfer_message "
+    "ON prediction_transfers(group_id,source_message_id) WHERE source_message_id IS NOT NULL"
+)
+c.execute(
     "CREATE INDEX IF NOT EXISTS idx_prediction_revival_due "
     "ON prediction_revival_notifications(status,revive_at,next_attempt_at)"
 )
@@ -335,7 +354,7 @@ if 'cancel_reason' not in bet_columns:
     c.execute("ALTER TABLE prediction_bets ADD COLUMN cancel_reason TEXT")
 score_columns = {row[1] for row in c.execute("PRAGMA table_info(prediction_scores)").fetchall()}
 for column in ('wagered', 'returned', 'game_earned', 'checkin_earned',
-               'commission_earned'):
+               'commission_earned', 'transfer_sent', 'transfer_received'):
     if column not in score_columns:
         c.execute("ALTER TABLE prediction_scores ADD COLUMN {} INTEGER NOT NULL DEFAULT 0".format(column))
 link_columns = {
@@ -949,17 +968,109 @@ def get_open_prediction_bets(group_id, user_id):
 def get_prediction_score(group_id, user_id):
     row = c.execute(
         """SELECT user_name,score,wins,losses,wagered,returned,game_earned,
-                  checkin_earned,commission_earned
+                  checkin_earned,commission_earned,transfer_sent,transfer_received
            FROM prediction_scores
            WHERE group_id=? AND user_id=?""",
         (int(group_id), int(user_id)),
     ).fetchone()
     keys = ('user_name','score','wins','losses','wagered','returned','game_earned',
-            'checkin_earned','commission_earned')
+            'checkin_earned','commission_earned','transfer_sent','transfer_received')
     return dict(zip(keys, row)) if row else {
         'user_name': str(user_id), 'score': 1000, 'wins': 0, 'losses': 0,
         'wagered': 0, 'returned': 0, 'game_earned': 0, 'checkin_earned': 0,
-        'commission_earned': 0,
+        'commission_earned': 0, 'transfer_sent': 0, 'transfer_received': 0,
+    }
+
+
+def transfer_prediction_score(group_id, sender_id, sender_name, recipient_id,
+                              amount, source_message_id=None, now=None):
+    """Atomically transfer ordinary prediction points with event deduplication."""
+    now = int(time.time()) if now is None else int(now)
+    group_id = int(group_id)
+    sender_id = int(sender_id)
+    recipient_id = int(recipient_id)
+    amount = int(amount)
+    source_message_id = (
+        int(source_message_id) if source_message_id is not None else None
+    )
+    if sender_id == recipient_id:
+        raise ValueError('不能给自己赠送积分')
+    if amount <= 0 or amount > int(config.PREDICTION_TRANSFER_MAX):
+        raise ValueError('赠送点数必须在 1 到 {} 之间'.format(
+            config.PREDICTION_TRANSFER_MAX
+        ))
+    enforce_prediction_loan_for_user(group_id, sender_id, now)
+    with conn:
+        _raise_if_prediction_dead(group_id, sender_id, now)
+        if c.execute(
+            """SELECT 1 FROM prediction_loans
+               WHERE group_id=? AND user_id=? AND status='open' LIMIT 1""",
+            (group_id, sender_id),
+        ).fetchone():
+            raise ValueError('有贷款未还时不能赠送积分，请先还款')
+        if source_message_id is not None:
+            existing = c.execute(
+                """SELECT id,recipient_id,recipient_name,amount
+                   FROM prediction_transfers
+                   WHERE group_id=? AND source_message_id=?""",
+                (group_id, source_message_id),
+            ).fetchone()
+            if existing:
+                balance = get_prediction_score(group_id, sender_id)['score']
+                return {
+                    'id': int(existing[0]), 'recipient_id': int(existing[1]),
+                    'recipient_name': existing[2], 'amount': int(existing[3]),
+                    'balance': int(balance), 'duplicate': True,
+                }
+        c.execute(
+            """INSERT INTO prediction_scores(group_id,user_id,user_name,score,updated_at)
+               VALUES (?,?,?,1000,?) ON CONFLICT(group_id,user_id) DO UPDATE SET
+               user_name=excluded.user_name,updated_at=excluded.updated_at""",
+            (group_id, sender_id, sender_name, now),
+        )
+        sender_balance = c.execute(
+            "SELECT score FROM prediction_scores WHERE group_id=? AND user_id=?",
+            (group_id, sender_id),
+        ).fetchone()[0]
+        if int(sender_balance) < amount:
+            raise ValueError('余额不足：当前可用 {} 点'.format(sender_balance))
+        recipient_row = c.execute(
+            """SELECT user_name,score FROM prediction_scores
+               WHERE group_id=? AND user_id=?""",
+            (group_id, recipient_id),
+        ).fetchone()
+        recipient_name = recipient_row[0] if recipient_row else str(recipient_id)
+        c.execute(
+            """UPDATE prediction_scores SET score=score-?,transfer_sent=transfer_sent+?,
+               updated_at=? WHERE group_id=? AND user_id=?""",
+            (amount, amount, now, group_id, sender_id),
+        )
+        c.execute(
+            """INSERT INTO prediction_scores
+               (group_id,user_id,user_name,score,transfer_received,updated_at)
+               VALUES (?,?,?,1000+?,?,?)
+               ON CONFLICT(group_id,user_id) DO UPDATE SET
+                 score=prediction_scores.score+?,
+                 transfer_received=prediction_scores.transfer_received+?,
+                 updated_at=excluded.updated_at""",
+            (group_id, recipient_id, recipient_name, amount, amount, now,
+             amount, amount),
+        )
+        c.execute(
+            """INSERT INTO prediction_transfers
+               (group_id,sender_id,sender_name,recipient_id,recipient_name,
+                amount,source_message_id,created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (group_id, sender_id, sender_name, recipient_id, recipient_name,
+             amount, source_message_id, now),
+        )
+        transfer_id = c.lastrowid
+        recipient_balance = get_prediction_score(group_id, recipient_id)['score']
+    return {
+        'id': int(transfer_id), 'recipient_id': recipient_id,
+        'recipient_name': recipient_name, 'amount': amount,
+        'balance': int(sender_balance) - amount,
+        'recipient_balance': int(recipient_balance), 'duplicate': False,
     }
 
 

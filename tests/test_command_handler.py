@@ -224,6 +224,31 @@ class CommandHandlerTest(unittest.TestCase):
         self.assertIn('签到成功', send.call_args.args[0])
 
     @patch('command_handler.send')
+    @patch('command_handler.transfer_prediction_score', return_value={
+        'id': 1, 'recipient_id': 654, 'recipient_name': '654',
+        'amount': 250, 'balance': 750, 'recipient_balance': 1250,
+        'duplicate': False,
+    })
+    def test_member_can_gift_prediction_points(self, transfer, send):
+        event = dict(
+            self.admin_event, self_id=999, user_id=321, message_id=8801,
+            sender={'role': 'member', 'card': '赠送者'}, message=[
+                {'type': 'at', 'data': {'qq': '999'}},
+                {'type': 'text', 'data': {'text': ' 赠送 '}},
+                {'type': 'at', 'data': {'qq': '654'}},
+                {'type': 'text', 'data': {'text': ' 250'}},
+            ],
+        )
+
+        self.assertTrue(command_handler.handle_event(event))
+        transfer.assert_called_once_with(
+            config.QQ_GROUP_ID, 321, '赠送者', 654, 250,
+            source_message_id=8801,
+        )
+        self.assertIn('[CQ:at,qq=654]', send.call_args.args[0])
+        self.assertIn('250点', send.call_args.args[0])
+
+    @patch('command_handler.send')
     @patch('command_handler.unbind_prediction_player', return_value={
         'user_id': 456, 'user_name': '群友', 'account_id': 42,
         'nickname': '测试玩家',
