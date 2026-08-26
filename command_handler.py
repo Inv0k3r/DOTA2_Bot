@@ -318,7 +318,7 @@ def _place_prediction(arguments, event):
         )
     except ValueError as exc:
         return '下注失败：{}'.format(exc)
-    action = '已改押' if result['changed'] else '下注成功'
+    action = '下注成功'
     current_odds = result.get('odds', locked_odds)
     market = result.get('market', odds)
     timing_note = (

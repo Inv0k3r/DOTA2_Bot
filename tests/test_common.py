@@ -155,31 +155,24 @@ class CommonTest(unittest.TestCase):
         self.assertEqual(item['payload'], 'addendum')
         self.assertEqual(item['player_ids'], [42, 99])
 
-    def test_prediction_bet_can_change_and_settles_once(self):
+    def test_repeated_prediction_bets_are_independent_and_settle_once(self):
         import DBOper
 
         first = DBOper.place_prediction_bet(1, 99, '群友', 42, '测试玩家', True, 100, 2.0, 100)
-        changed = DBOper.place_prediction_bet(1, 99, '群友', 42, '测试玩家', False, 200, 1.5, 100)
-        self.assertFalse(first['changed'])
-        self.assertTrue(changed['changed'])
-        self.assertEqual(len(DBOper.get_open_prediction_bets(1, 99)), 1)
+        second = DBOper.place_prediction_bet(1, 99, '群友', 42, '测试玩家', False, 200, 1.5, 100)
+        self.assertNotEqual(first['id'], second['id'])
+        self.assertEqual(len(DBOper.get_open_prediction_bets(1, 99)), 2)
 
         rows = [{'account_id': 42, 'nickname': '测试玩家', 'won': False}]
         settled = DBOper.settle_prediction_bets(1, 101, 9999999999, rows)
         repeated = DBOper.settle_prediction_bets(1, 101, 9999999999, rows)
 
-        self.assertEqual(len(settled), 1)
-        self.assertTrue(settled[0]['correct'])
+        self.assertEqual(len(settled), 2)
+        self.assertEqual(sum(1 for item in settled if item['correct']), 1)
         self.assertEqual(repeated, [])
-        self.assertEqual(
-            DBOper.get_prediction_score(1, 99)['score'],
-            800 + int(round(200 * settled[0]['odds'])),
-        )
+        self.assertEqual(DBOper.get_prediction_score(1, 99)['score'], 1000)
         self.assertEqual(DBOper.get_prediction_score(1, 99)['wagered'], 300)
-        self.assertEqual(
-            DBOper.get_prediction_score(1, 99)['returned'],
-            100 + int(round(200 * settled[0]['odds'])),
-        )
+        self.assertEqual(DBOper.get_prediction_score(1, 99)['returned'], 300)
 
     def test_prediction_loan_borrow_and_repay(self):
         import DBOper

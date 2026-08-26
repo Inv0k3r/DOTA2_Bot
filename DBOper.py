@@ -166,9 +166,10 @@ c.execute(
         settled_at INTEGER
     )"""
 )
+c.execute("DROP INDEX IF EXISTS idx_prediction_bets_open")
 c.execute(
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_prediction_bets_open "
-    "ON prediction_bets(group_id,user_id,target_account_id) WHERE status='open'"
+    "CREATE INDEX IF NOT EXISTS idx_prediction_bets_user_status "
+    "ON prediction_bets(group_id,user_id,target_account_id,status)"
 )
 c.execute(
     "CREATE INDEX IF NOT EXISTS idx_prediction_bets_target_status "
@@ -869,7 +870,7 @@ def get_prediction_odds(group_id, target_account_id):
 
 def place_prediction_bet(group_id, user_id, user_name, target_account_id,
                          target_nickname, prediction, stake, odds, after_match_id):
-    """Create/change a bet and permanently lock the offered odds."""
+    """Create an independent bet and permanently lock the offered odds."""
     now = int(time.time())
     group_id = int(group_id)
     user_id = int(user_id)
@@ -897,47 +898,30 @@ def place_prediction_bet(group_id, user_id, user_name, target_account_id,
                user_name=excluded.user_name,updated_at=excluded.updated_at""",
             (group_id, user_id, user_name, now),
         )
-        row = c.execute(
-            """SELECT id,stake FROM prediction_bets
-               WHERE group_id=? AND user_id=? AND target_account_id=? AND status='open'""",
-            (group_id, user_id, target_account_id),
-        ).fetchone()
-        refundable = int(row[1]) if row else 0
         balance = c.execute(
             "SELECT score FROM prediction_scores WHERE group_id=? AND user_id=?",
             (group_id, user_id),
-        ).fetchone()[0] + refundable
+        ).fetchone()[0]
         if balance < stake:
             raise ValueError('余额不足：当前可用 {} 点'.format(balance))
-        if row:
-            c.execute(
-                """UPDATE prediction_bets
-                   SET user_name=?,target_nickname=?,prediction=?,stake=?,odds=?,
-                       after_match_id=?,updated_at=?
-                   WHERE id=?""",
-                (user_name, target_nickname, prediction, stake, odds,
-                 int(after_match_id), now, row[0]),
-            )
-            bet_id, changed = row[0], True
-        else:
-            c.execute(
-                """INSERT INTO prediction_bets
-                   (group_id,user_id,user_name,target_account_id,target_nickname,prediction,
-                    stake,odds,after_match_id,status,created_at,updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,'open',?,?)""",
-                (group_id, user_id, user_name, target_account_id,
-                 target_nickname, prediction, stake, odds, int(after_match_id), now, now),
-            )
-            bet_id, changed = c.lastrowid, False
+        c.execute(
+            """INSERT INTO prediction_bets
+               (group_id,user_id,user_name,target_account_id,target_nickname,prediction,
+                stake,odds,after_match_id,status,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,'open',?,?)""",
+            (group_id, user_id, user_name, target_account_id,
+             target_nickname, prediction, stake, odds, int(after_match_id), now, now),
+        )
+        bet_id = c.lastrowid
         c.execute(
             """UPDATE prediction_scores
-               SET score=?,wagered=wagered+?,returned=returned+?,updated_at=?
+               SET score=?,wagered=wagered+?,updated_at=?
                WHERE group_id=? AND user_id=?""",
-            (balance - stake, stake, refundable, now, group_id, user_id),
+            (balance - stake, stake, now, group_id, user_id),
         )
         market = _prediction_market(group_id, target_account_id)
     return {
-        'id': bet_id, 'changed': changed, 'balance': balance - stake,
+        'id': bet_id, 'balance': balance - stake,
         'odds': odds,
         'market': market,
     }
