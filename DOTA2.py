@@ -26,6 +26,7 @@ _HERO_NAMES_LOADED = False
 _CONSTANTS_CACHE = {}
 _opendota_retry_at = 0.0
 _opendota_parse_requested = set()
+_match_sequence_numbers = {}
 
 
 def _request_json(url: str, params=None, provider="API"):
@@ -111,7 +112,11 @@ def get_recent_match_ids_by_short_steamID(short_steamID: int, limit: int = 20) -
         params={'key': API_KEY, 'account_id': short_steamID, 'matches_requested': limit},
         provider="Steam match history",
     )
-    ids = [int(item['match_id']) for item in result.get('result', {}).get('matches', [])]
+    matches = result.get('result', {}).get('matches', [])
+    ids = [int(item['match_id']) for item in matches]
+    for item in matches:
+        if item.get('match_seq_num') is not None:
+            _match_sequence_numbers[int(item['match_id'])] = int(item['match_seq_num'])
     if not ids:
         raise DOTA2HTTPError('Steam match history contains no visible match')
     return ids
@@ -137,6 +142,26 @@ def _get_match_detail_from_steam(match_id: int) -> Dict:
     if not isinstance(result, dict) or not isinstance(result.get('players'), list):
         raise DOTA2HTTPError("Steam returned incomplete match details")
     return result
+
+
+def _get_match_detail_from_steam_sequence(match_id: int) -> Dict:
+    sequence_number = _match_sequence_numbers.get(int(match_id))
+    if sequence_number is None:
+        raise DOTA2HTTPError("Steam match sequence number is unavailable")
+    payload = _request_json(
+        'https://api.steampowered.com/IDOTA2Match_570/GetMatchHistoryBySequenceNum/v001/',
+        params={
+            'key': API_KEY,
+            'start_at_match_seq_num': sequence_number,
+            'matches_requested': 1,
+        },
+        provider="Steam match details by sequence",
+    )
+    matches = payload.get('result', {}).get('matches', [])
+    for match in matches:
+        if int(match.get('match_id', 0)) == int(match_id) and isinstance(match.get('players'), list):
+            return match
+    raise DOTA2HTTPError("Steam match details by sequence returned no matching result")
 
 
 def request_opendota_match_parse(match_id: int) -> bool:
@@ -176,23 +201,29 @@ def request_opendota_match_parse(match_id: int) -> bool:
 def get_match_detail_info(match_id: int) -> Dict:
     """Prefer OpenDota for current match details and fall back to Steam."""
     errors = []
+    opendota_missing = False
     try:
         return _get_match_detail_from_opendota(match_id)
     except DOTA2HTTPError as exc:
         errors.append(str(exc))
-        if "OpenDota match details returned HTTP 404" in str(exc):
-            try:
-                submitted = request_opendota_match_parse(match_id)
-                errors.append(
-                    "OpenDota parse requested" if submitted
-                    else "OpenDota parse pending"
-                )
-            except DOTA2HTTPError as parse_exc:
-                errors.append(str(parse_exc))
+        opendota_missing = "OpenDota match details returned HTTP 404" in str(exc)
     try:
         return _get_match_detail_from_steam(match_id)
     except DOTA2HTTPError as exc:
         errors.append(str(exc))
+    try:
+        return _get_match_detail_from_steam_sequence(match_id)
+    except DOTA2HTTPError as exc:
+        errors.append(str(exc))
+    if opendota_missing:
+        try:
+            submitted = request_opendota_match_parse(match_id)
+            errors.append(
+                "OpenDota parse requested" if submitted
+                else "OpenDota parse pending"
+            )
+        except DOTA2HTTPError as parse_exc:
+            errors.append(str(parse_exc))
     raise DOTA2HTTPError("; ".join(errors))
 
 

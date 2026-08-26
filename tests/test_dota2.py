@@ -9,6 +9,7 @@ class Dota2Test(unittest.TestCase):
 
     def setUp(self):
         DOTA2._opendota_parse_requested.clear()
+        DOTA2._match_sequence_numbers.clear()
 
     @patch('DOTA2._request_json')
     def test_recent_matches_use_steam_before_opendota(self, request_json):
@@ -33,7 +34,7 @@ class Dota2Test(unittest.TestCase):
         ):
             self.assertIs(DOTA2.get_match_detail_info(123), expected)
 
-    def test_missing_opendota_match_requests_parse_before_steam_fallback(self):
+    def test_missing_match_requests_parse_after_steam_fallbacks_fail(self):
         with patch.object(
             DOTA2, "_get_match_detail_from_opendota",
             side_effect=DOTA2.DOTA2HTTPError(
@@ -46,6 +47,11 @@ class Dota2Test(unittest.TestCase):
             side_effect=DOTA2.DOTA2HTTPError(
                 "Steam match details returned HTTP 500"
             ),
+        ), patch.object(
+            DOTA2, "_get_match_detail_from_steam_sequence",
+            side_effect=DOTA2.DOTA2HTTPError(
+                "Steam match details by sequence returned HTTP 500"
+            ),
         ):
             with self.assertRaisesRegex(
                 DOTA2.DOTA2HTTPError, "OpenDota parse requested"
@@ -53,6 +59,26 @@ class Dota2Test(unittest.TestCase):
                 DOTA2.get_match_detail_info(123)
 
         request_parse.assert_called_once_with(123)
+
+    @patch('DOTA2._request_json')
+    def test_recent_matches_cache_sequence_for_detail_fallback(self, request_json):
+        request_json.side_effect = [
+            {'result': {'matches': [
+                {'match_id': 123, 'match_seq_num': 456},
+            ]}},
+            {'result': {'matches': [
+                {'match_id': 123, 'match_seq_num': 456, 'players': []},
+            ]}},
+        ]
+
+        self.assertEqual(DOTA2.get_recent_match_ids_by_short_steamID(42), [123])
+        match = DOTA2._get_match_detail_from_steam_sequence(123)
+
+        self.assertEqual(match['match_id'], 123)
+        self.assertEqual(
+            request_json.call_args_list[1].kwargs['params']['start_at_match_seq_num'],
+            456,
+        )
 
     @patch('DOTA2.requests.post')
     def test_parse_request_is_submitted_only_once_per_match(self, post):
