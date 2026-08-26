@@ -356,7 +356,18 @@ class CommonTest(unittest.TestCase):
         self.assertEqual(odds['games'], 4)
         self.assertLess(odds['win'], odds['lose'])
 
-    def test_bet_pools_reprice_every_open_bet(self):
+    def test_large_pool_cannot_overwhelm_recent_form_or_drop_below_floor(self):
+        import DBOper
+
+        self._record_results(42, [True] * 20, group_id=1)
+        with patch.object(DBOper.config, 'PREDICTION_MARKET_MAX_POOL_INFLUENCE', 0.20), \
+             patch.object(DBOper.config, 'PREDICTION_MARKET_MIN_ODDS', 1.30):
+            market = DBOper._prediction_market(1, 42, bets=[(1, 1000000)])
+        self.assertLessEqual(market['pool_influence'], 0.20)
+        self.assertGreaterEqual(market['win'], 1.30)
+        self.assertGreater(market['lose'], market['win'])
+
+    def test_bet_pools_change_next_quote_without_repricing_open_bets(self):
         import DBOper
 
         default = DBOper.get_prediction_odds(1, 42)
@@ -377,9 +388,13 @@ class CommonTest(unittest.TestCase):
         self.assertGreater(market['win'], after_win['win'])
         self.assertLess(market['lose'], after_win['lose'])
         first_bet = DBOper.get_open_prediction_bets(1, 801)[0]
-        self.assertEqual(first_bet['odds'], market['win'])
+        second_bet = DBOper.get_open_prediction_bets(1, 802)[0]
+        self.assertEqual(first_bet['odds'], default['win'])
+        self.assertEqual(second_bet['odds'], after_win['lose'])
+        self.assertEqual(first['odds'], default['win'])
+        self.assertEqual(second['odds'], after_win['lose'])
 
-    def test_startup_refresh_reprices_existing_open_markets(self):
+    def test_open_bet_keeps_persisted_odds(self):
         import DBOper
 
         with DBOper.conn:
@@ -390,21 +405,20 @@ class CommonTest(unittest.TestCase):
                    VALUES (1,820,'旧下注',42,'测试玩家',1,500,4.0,100,'open',1,1)"""
             )
 
-        self.assertEqual(DBOper.refresh_all_prediction_markets(), 1)
         refreshed = DBOper.get_open_prediction_bets(1, 820)[0]
-        self.assertEqual(refreshed['odds'], DBOper.get_prediction_odds(1, 42)['win'])
-        self.assertNotEqual(refreshed['odds'], 4.0)
+        self.assertEqual(refreshed['odds'], 4.0)
 
-    def test_settlement_uses_final_pool_odds_for_all_bettors(self):
+    def test_settlement_uses_each_bets_locked_odds(self):
         import DBOper
 
         initial = DBOper.get_prediction_odds(1, 42)
         DBOper.place_prediction_bet(
             1, 811, '甲', 42, '测试玩家', True, 100, initial['win'], 100,
         )
-        final = DBOper.place_prediction_bet(
+        after_first = DBOper.get_prediction_odds(1, 42)
+        DBOper.place_prediction_bet(
             1, 812, '乙', 42, '测试玩家', False, 300, initial['lose'], 100,
-        )['market']
+        )
         # Production persists the completed match before settling; that result
         # must not leak backwards into its own closing price.
         self._record_results(42, [True], group_id=1, first_match_id=101)
@@ -415,12 +429,13 @@ class CommonTest(unittest.TestCase):
         )
 
         winner = next(item for item in settled if item['user_id'] == 811)
-        self.assertEqual(winner['odds'], final['win'])
-        self.assertEqual(winner['payout'], int(round(100 * final['win'])))
+        self.assertNotEqual(initial['win'], after_first['win'])
+        self.assertEqual(winner['odds'], initial['win'])
+        self.assertEqual(winner['payout'], int(round(100 * initial['win'])))
         stored = DBOper.c.execute(
             'SELECT odds FROM prediction_bets WHERE id=?', (winner['bet_id'],)
         ).fetchone()[0]
-        self.assertEqual(stored, final['win'])
+        self.assertEqual(stored, initial['win'])
 
     def test_bound_player_earns_once_per_match(self):
         import DBOper

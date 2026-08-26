@@ -328,8 +328,8 @@ def _place_prediction(arguments, event):
         if currently_in_dota else
         '只结算下注时间之后开始的比赛；已经开打的对局不会追认。'
     )
-    return ('{}：{} 下一场{} {}点｜实时赔率 {:.2f}｜潜在返还 {}点｜余额 {}点\n'
-            '当前奖池：赢 {} / 输 {}｜每次下注后赔率都会变化，以封盘赔率结算。\n{}').format(
+    return ('{}：{} 下一场{} {}点｜锁定赔率 {:.2f}｜潜在返还 {}点｜余额 {}点\n'
+            '当前奖池：赢 {} / 输 {}｜本笔赔率已锁定，后续下注不会影响。\n{}').format(
         action, tracked.nickname, parts[1], stake, current_odds,
         int(round(stake * current_odds)), result['balance'],
         market.get('win_pool', 0), market.get('lose_pool', 0), timing_note)

@@ -778,46 +778,36 @@ def _prediction_market(group_id, target_account_id, bets=None,
     win_pool = sum(int(stake) for prediction, stake in bets if int(prediction))
     lose_pool = sum(int(stake) for prediction, stake in bets if not int(prediction))
     liquidity = float(config.PREDICTION_MARKET_LIQUIDITY)
-    total = liquidity + win_pool + lose_pool
-    market_win_probability = (
-        form['win_probability'] * liquidity + win_pool
-    ) / total
+    pool_total = win_pool + lose_pool
+    if pool_total:
+        # Stakes only tilt the recent-form price. Even a very large one-sided
+        # pool cannot outweigh the player's actual recent performance.
+        natural_influence = pool_total / (liquidity + pool_total)
+        pool_influence = min(
+            config.PREDICTION_MARKET_MAX_POOL_INFLUENCE, natural_influence
+        )
+        pool_win_probability = win_pool / pool_total
+        market_win_probability = (
+            form['win_probability'] * (1.0 - pool_influence)
+            + pool_win_probability * pool_influence
+        )
+    else:
+        market_win_probability = form['win_probability']
     market_win_probability = min(0.95, max(0.05, market_win_probability))
 
     def offered(probability):
         raw = config.PREDICTION_MARKET_PAYOUT_RATE / probability
-        return round(min(6.0, max(1.10, raw)), 2)
+        return round(min(6.0, max(config.PREDICTION_MARKET_MIN_ODDS, raw)), 2)
 
     return {
         'games': form['games'], 'wins': form['wins'],
         'base_win_probability': form['win_probability'],
+        'pool_influence': pool_influence if pool_total else 0.0,
         'win_pool': win_pool, 'lose_pool': lose_pool,
         'market_active': bool(win_pool or lose_pool),
         'win': offered(market_win_probability),
         'lose': offered(1.0 - market_win_probability),
     }
-
-
-def _refresh_open_prediction_odds(group_id, target_account_id):
-    market = _prediction_market(group_id, target_account_id)
-    c.execute(
-        """UPDATE prediction_bets SET odds=CASE prediction WHEN 1 THEN ? ELSE ? END
-           WHERE group_id=? AND target_account_id=? AND status='open'""",
-        (market['win'], market['lose'], int(group_id), int(target_account_id)),
-    )
-    return market
-
-
-def refresh_all_prediction_markets():
-    """Reprice persisted open markets after startup or a pricing configuration change."""
-    markets = c.execute(
-        """SELECT DISTINCT group_id,target_account_id FROM prediction_bets
-           WHERE status='open'"""
-    ).fetchall()
-    with conn:
-        for group_id, account_id in markets:
-            _refresh_open_prediction_odds(group_id, account_id)
-    return len(markets)
 
 
 def get_prediction_odds(group_id, target_account_id):
@@ -826,15 +816,18 @@ def get_prediction_odds(group_id, target_account_id):
 
 def place_prediction_bet(group_id, user_id, user_name, target_account_id,
                          target_nickname, prediction, stake, odds, after_match_id):
-    """Create/change a bet, then reprice every open bet in the target market."""
+    """Create/change a bet and permanently lock the offered odds."""
     now = int(time.time())
     group_id = int(group_id)
     user_id = int(user_id)
     target_account_id = int(target_account_id)
     prediction = 1 if prediction else 0
     stake = int(stake)
+    odds = float(odds)
     if stake <= 0:
         raise ValueError('下注点数必须大于 0')
+    if not 1.0 <= odds <= 100.0:
+        raise ValueError('赔率无效，请重新查询后下注')
     enforce_prediction_loan_for_user(group_id, user_id, now)
     with conn:
         _raise_if_prediction_dead(group_id, user_id, now)
@@ -869,7 +862,7 @@ def place_prediction_bet(group_id, user_id, user_name, target_account_id,
                    SET user_name=?,target_nickname=?,prediction=?,stake=?,odds=?,
                        after_match_id=?,updated_at=?
                    WHERE id=?""",
-                (user_name, target_nickname, prediction, stake, 2.0,
+                (user_name, target_nickname, prediction, stake, odds,
                  int(after_match_id), now, row[0]),
             )
             bet_id, changed = row[0], True
@@ -880,7 +873,7 @@ def place_prediction_bet(group_id, user_id, user_name, target_account_id,
                     stake,odds,after_match_id,status,created_at,updated_at)
                    VALUES (?,?,?,?,?,?,?,?,?,'open',?,?)""",
                 (group_id, user_id, user_name, target_account_id,
-                 target_nickname, prediction, stake, 2.0, int(after_match_id), now, now),
+                 target_nickname, prediction, stake, odds, int(after_match_id), now, now),
             )
             bet_id, changed = c.lastrowid, False
         c.execute(
@@ -889,10 +882,10 @@ def place_prediction_bet(group_id, user_id, user_name, target_account_id,
                WHERE group_id=? AND user_id=?""",
             (balance - stake, stake, refundable, now, group_id, user_id),
         )
-        market = _refresh_open_prediction_odds(group_id, target_account_id)
+        market = _prediction_market(group_id, target_account_id)
     return {
         'id': bet_id, 'changed': changed, 'balance': balance - stake,
-        'odds': market['win'] if prediction else market['lose'],
+        'odds': odds,
         'market': market,
     }
 
@@ -1217,8 +1210,6 @@ def _cancel_open_prediction_bets(group_id, account_id, reason, now=None,
             'bet_id': int(bet_id), 'user_id': int(bettor_id),
             'user_name': user_name, 'stake': stake,
         })
-    if cancelled:
-        _refresh_open_prediction_odds(group_id, account_id)
     return cancelled
 
 
@@ -1294,12 +1285,7 @@ def settle_prediction_bets(group_id, match_id, match_start_time, match_rows,
                      AND after_match_id<? AND created_at<=? ORDER BY id""",
                 (int(group_id), account_id, int(match_id), int(match_start_time)),
             ).fetchall()
-            market = _prediction_market(
-                group_id, account_id,
-                bets=[(row[3], row[4]) for row in bets],
-                exclude_match_id=match_id,
-            )
-            for bet_id, user_id, user_name, prediction, stake, _old_odds in bets:
+            for bet_id, user_id, user_name, prediction, stake, odds in bets:
                 linked_to_target = c.execute(
                     """SELECT 1 FROM prediction_player_links
                        WHERE group_id=? AND user_id=? AND account_id=?""",
@@ -1308,7 +1294,6 @@ def settle_prediction_bets(group_id, match_id, match_start_time, match_rows,
                 if linked_to_target:
                     _cancel_open_self_bets(group_id, user_id, account_id, now)
                     continue
-                odds = market['win'] if int(prediction) else market['lose']
                 correct = int(prediction) == actual_won
                 score_row = c.execute(
                     """SELECT score FROM prediction_scores WHERE group_id=? AND user_id=?""",
@@ -1319,10 +1304,10 @@ def settle_prediction_bets(group_id, match_id, match_start_time, match_rows,
                 profit = payout - int(stake)
                 c.execute(
                     """UPDATE prediction_bets SET status='settled',settled_match_id=?,
-                       actual_won=?,score_delta=?,odds=?,cancel_reason=NULL,
+                       actual_won=?,score_delta=?,cancel_reason=NULL,
                        settled_at=?,updated_at=?
                        WHERE id=? AND status='open'""",
-                    (int(match_id), actual_won, profit, odds, now, now, bet_id),
+                    (int(match_id), actual_won, profit, now, now, bet_id),
                 )
                 if not c.rowcount:
                     continue
@@ -1342,7 +1327,6 @@ def settle_prediction_bets(group_id, match_id, match_start_time, match_rows,
                     'odds': odds, 'payout': payout, 'delta': profit,
                     'score': current_score + payout,
                 })
-            _refresh_open_prediction_odds(group_id, account_id)
             commission_amount = int(round(
                 opposition_stake * config.PREDICTION_UPSET_COMMISSION_RATE
             ))
