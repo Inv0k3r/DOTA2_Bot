@@ -25,6 +25,7 @@ _HERO_NAMES_CACHE = {}
 _HERO_NAMES_LOADED = False
 _CONSTANTS_CACHE = {}
 _opendota_retry_at = 0.0
+_opendota_parse_requested = set()
 
 
 def _request_json(url: str, params=None, provider="API"):
@@ -138,14 +139,60 @@ def _get_match_detail_from_steam(match_id: int) -> Dict:
     return result
 
 
+def request_opendota_match_parse(match_id: int) -> bool:
+    """Submit one OpenDota parse job per match for the lifetime of this process."""
+    global _opendota_retry_at
+    match_id = int(match_id)
+    if match_id in _opendota_parse_requested:
+        return False
+    if time.monotonic() < _opendota_retry_at:
+        raise DOTA2HTTPError("OpenDota rate limit cooldown")
+    try:
+        response = requests.post(
+            '{}/request/{}'.format(OPENDOTA_API_URL, match_id),
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get('job'), dict):
+            raise DOTA2HTTPError("OpenDota parse request returned invalid response")
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else "unknown"
+        if status_code == 429:
+            _opendota_retry_at = time.monotonic() + OPENDOTA_RATE_LIMIT_BACKOFF
+        raise DOTA2HTTPError(
+            "OpenDota parse request returned HTTP {}".format(status_code)
+        ) from exc
+    except requests.RequestException as exc:
+        raise DOTA2HTTPError(
+            "OpenDota parse request failed: {}".format(type(exc).__name__)
+        ) from exc
+    except ValueError as exc:
+        raise DOTA2HTTPError("OpenDota parse request returned invalid JSON") from exc
+    _opendota_parse_requested.add(match_id)
+    return True
+
+
 def get_match_detail_info(match_id: int) -> Dict:
     """Prefer OpenDota for current match details and fall back to Steam."""
     errors = []
-    for loader in (_get_match_detail_from_opendota, _get_match_detail_from_steam):
-        try:
-            return loader(match_id)
-        except DOTA2HTTPError as exc:
-            errors.append(str(exc))
+    try:
+        return _get_match_detail_from_opendota(match_id)
+    except DOTA2HTTPError as exc:
+        errors.append(str(exc))
+        if "OpenDota match details returned HTTP 404" in str(exc):
+            try:
+                submitted = request_opendota_match_parse(match_id)
+                errors.append(
+                    "OpenDota parse requested" if submitted
+                    else "OpenDota parse pending"
+                )
+            except DOTA2HTTPError as parse_exc:
+                errors.append(str(parse_exc))
+    try:
+        return _get_match_detail_from_steam(match_id)
+    except DOTA2HTTPError as exc:
+        errors.append(str(exc))
     raise DOTA2HTTPError("; ".join(errors))
 
 

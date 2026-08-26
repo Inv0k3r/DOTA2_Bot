@@ -181,6 +181,12 @@ def _record_match_detail_failure(match_id: int):
     return failures, delay
 
 
+def _record_match_parse_pending(match_id: int):
+    delay = config.OPENDOTA_PARSE_RETRY_INTERVAL
+    _next_match_detail_at[match_id] = time.monotonic() + delay
+    return _match_detail_failures.get(match_id, 0), delay
+
+
 def _record_match_detail_success(match_id: int):
     _match_detail_failures.pop(match_id, None)
     _next_match_detail_at.pop(match_id, None)
@@ -301,7 +307,10 @@ def _queue_detected_matches(detected_matches):
         try:
             match, matched_players = _load_match_context(match_id, detected_players)
         except DOTA2.DOTA2HTTPError as exc:
-            failures, delay = _record_match_detail_failure(match_id)
+            if 'OpenDota parse requested' in str(exc) or 'OpenDota parse pending' in str(exc):
+                failures, delay = _record_match_parse_pending(match_id)
+            else:
+                failures, delay = _record_match_detail_failure(match_id)
             logger.warning(
                 "比赛 %s 详情尚未就绪，第 %s 次；%.0f 秒后重试: %s",
                 match_id, failures, delay, exc,

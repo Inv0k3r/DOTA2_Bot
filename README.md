@@ -247,6 +247,7 @@ python manage.py report 90045009 "示例玩家" --match-id 1234567890 --send
 - `STEAM_HISTORY_CIRCUIT_THRESHOLD`：Steam 历史接口连续瞬时故障多少次后触发全局熔断，默认 3；HTTP 429 会立即熔断。
 - `STEAM_HISTORY_CIRCUIT_COOLDOWN`：Steam 历史接口全局熔断秒数，默认 300，恢复后玩家会错峰重试。
 - `OPENDOTA_RATE_LIMIT_BACKOFF`：OpenDota 返回限流响应后的全局冷却秒数，默认 300。
+- `OPENDOTA_PARSE_RETRY_INTERVAL`：详情尚未收录并已提交 OpenDota 解析后，再次检查的间隔，默认 120 秒。
 - `PREDICTION_ODDS_HISTORY_MATCHES`：默认赔率参考的近期比赛场数，默认 20。
 - `PREDICTION_ODDS_RECENCY_DECAY`：历史权重逐场衰减系数，默认 0.82，越低越强调最近几场。
 - `PREDICTION_ODDS_PRIOR_WEIGHT`：50/50 初始先验权重，默认 2.0，越低赔率越容易随近期状态拉开。

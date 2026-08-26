@@ -7,6 +7,9 @@ from player import player
 
 class Dota2Test(unittest.TestCase):
 
+    def setUp(self):
+        DOTA2._opendota_parse_requested.clear()
+
     @patch('DOTA2._request_json')
     def test_recent_matches_use_steam_before_opendota(self, request_json):
         request_json.return_value = {
@@ -29,6 +32,39 @@ class Dota2Test(unittest.TestCase):
             return_value=expected,
         ):
             self.assertIs(DOTA2.get_match_detail_info(123), expected)
+
+    def test_missing_opendota_match_requests_parse_before_steam_fallback(self):
+        with patch.object(
+            DOTA2, "_get_match_detail_from_opendota",
+            side_effect=DOTA2.DOTA2HTTPError(
+                "OpenDota match details returned HTTP 404"
+            ),
+        ), patch.object(
+            DOTA2, "request_opendota_match_parse", return_value=True,
+        ) as request_parse, patch.object(
+            DOTA2, "_get_match_detail_from_steam",
+            side_effect=DOTA2.DOTA2HTTPError(
+                "Steam match details returned HTTP 500"
+            ),
+        ):
+            with self.assertRaisesRegex(
+                DOTA2.DOTA2HTTPError, "OpenDota parse requested"
+            ):
+                DOTA2.get_match_detail_info(123)
+
+        request_parse.assert_called_once_with(123)
+
+    @patch('DOTA2.requests.post')
+    def test_parse_request_is_submitted_only_once_per_match(self, post):
+        post.return_value.json.return_value = {'job': {'jobId': 7}}
+
+        self.assertTrue(DOTA2.request_opendota_match_parse(123))
+        self.assertFalse(DOTA2.request_opendota_match_parse(123))
+
+        post.assert_called_once_with(
+            '{}/request/123'.format(DOTA2.OPENDOTA_API_URL),
+            timeout=DOTA2.REQUEST_TIMEOUT,
+        )
 
     def test_generate_report_from_opendota_compatible_match(self):
         tracked = player("测试玩家", 42, 76561197960265770, 122)

@@ -730,6 +730,19 @@ class CommonTest(unittest.TestCase):
         get_outbox.assert_not_called()
         enqueue.assert_not_called()
 
+    @patch("common.time.monotonic", return_value=100)
+    def test_opendota_parse_pending_uses_short_fixed_retry(self, _monotonic):
+        common._match_detail_failures[101] = 7
+
+        failures, delay = common._record_match_parse_pending(101)
+
+        self.assertEqual(failures, 7)
+        self.assertEqual(delay, common.config.OPENDOTA_PARSE_RETRY_INTERVAL)
+        self.assertEqual(
+            common._next_match_detail_at[101],
+            100 + common.config.OPENDOTA_PARSE_RETRY_INTERVAL,
+        )
+
     @patch("common.enqueue_match_addendum", return_value=True)
     @patch("common.DOTA2.generate_match_message", return_value="late report")
     @patch("common.DOTA2.get_match_detail_info", return_value={
