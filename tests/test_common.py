@@ -349,6 +349,40 @@ class CommonTest(unittest.TestCase):
         self.assertEqual(DBOper.settle_prediction_bets(1, 101, 0, rows), [])
         self.assertEqual(len(DBOper.get_open_prediction_bets(1, 97)), 1)
 
+    def test_predictions_in_last_three_prestart_minutes_settle_current_match(self):
+        import DBOper
+
+        at_three_minutes = DBOper.place_prediction_bet(
+            1, 971, '三分钟前', 42, '测试玩家', True, 100, 2.0, 100
+        )
+        at_last_second = DBOper.place_prediction_bet(
+            1, 972, '最后一秒', 42, '测试玩家', True, 100, 2.0, 100
+        )
+        too_late = DBOper.place_prediction_bet(
+            1, 973, '开局以后', 42, '测试玩家', True, 100, 2.0, 100
+        )
+        with DBOper.conn:
+            DBOper.c.execute(
+                'UPDATE prediction_bets SET created_at=? WHERE id=?',
+                (820, at_three_minutes['id']),
+            )
+            DBOper.c.execute(
+                'UPDATE prediction_bets SET created_at=? WHERE id=?',
+                (999, at_last_second['id']),
+            )
+            DBOper.c.execute(
+                'UPDATE prediction_bets SET created_at=? WHERE id=?',
+                (1001, too_late['id']),
+            )
+        settled = DBOper.settle_prediction_bets(
+            1, 101, 1000,
+            [{'account_id': 42, 'nickname': '测试玩家', 'won': True}],
+        )
+        self.assertEqual({item['user_id'] for item in settled}, {971, 972})
+        remaining = DBOper.get_open_prediction_bets(1, 973)
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]['id'], too_late['id'])
+
     def test_prediction_rejects_insufficient_balance(self):
         import DBOper
 

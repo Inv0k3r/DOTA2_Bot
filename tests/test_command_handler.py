@@ -128,7 +128,7 @@ class CommandHandlerTest(unittest.TestCase):
             config.QQ_GROUP_ID, 321, '竞猜人', 42, '测试玩家', True, 100, 1.8, 100,
         )
         self.assertIn('下注成功', send.call_args.args[0])
-        self.assertIn('已经开打的对局不会追认', send.call_args.args[0])
+        self.assertIn('开局前最后3分钟内仍可下注本局', send.call_args.args[0])
 
     @patch('command_handler.send')
     @patch('command_handler.common.is_player_currently_in_dota', return_value=True)
@@ -150,7 +150,7 @@ class CommandHandlerTest(unittest.TestCase):
 
         self.assertTrue(command_handler.handle_event(event))
         place_bet.assert_called_once()
-        self.assertIn('自动押正在进行这局之后的下一盘', send.call_args.args[0])
+        self.assertIn('实际开局前最后3分钟内下注仍算本局', send.call_args.args[0])
 
     @patch('command_handler.send')
     @patch('command_handler.get_prediction_score', return_value={

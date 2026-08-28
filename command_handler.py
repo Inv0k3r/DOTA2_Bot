@@ -323,11 +323,11 @@ def _place_prediction(arguments, event):
     current_odds = result.get('odds', locked_odds)
     market = result.get('market', odds)
     timing_note = (
-        '{} 当前正在游戏：本次自动押正在进行这局之后的下一盘。'.format(
+        '{} 当前已进入 DOTA2，但 Steam 状态不等于正式开局；实际开局前最后3分钟内下注仍算本局，若已开局则自动顺延下一局。'.format(
             tracked.nickname
         )
         if currently_in_dota else
-        '只结算下注时间之后开始的比赛；已经开打的对局不会追认。'
+        '以实际开局时间为准：开局前最后3分钟内仍可下注本局，开局后自动顺延下一局。'
     )
     return ('{}：{} 下一场{} {}点｜锁定赔率 {:.2f}｜潜在返还 {}点｜余额 {}点\n'
             '当前奖池：赢 {} / 输 {}｜本笔赔率已锁定，后续下注不会影响。\n{}').format(
