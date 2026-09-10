@@ -10,6 +10,7 @@ from DBOper import (
     enforce_overdue_prediction_loans, get_due_prediction_revivals,
     get_enabled_players, is_player_stored, insert_info,
     mark_prediction_revival_failed, mark_prediction_revival_sent,
+    purge_legacy_disabled_players,
 )
 from common import refresh_match_poll_priorities, steam_id_convert_32_to_64, update_and_send_message_DOTA2
 from event_receiver import process_pending_events, start_event_server
@@ -47,6 +48,12 @@ def process_prediction_loan_state(force=False):
 
 
 def init():
+    for cleanup in purge_legacy_disabled_players():
+        logger.warning(
+            "已清理旧版停用玩家 %s：退款 %s 笔，共 %s 点",
+            cleanup['account_id'], cleanup['refunded_bets'],
+            cleanup['refunded_score'],
+        )
     # 环境变量只负责导入新增玩家，之后由数据库保存启用状态。
     for i in config.PLAYER_LIST:
         nickname = i[0]

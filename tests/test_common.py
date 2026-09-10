@@ -129,6 +129,54 @@ class CommonTest(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(tombstones, 0)
 
+    def test_legacy_disabled_player_is_fully_purged_and_open_bets_refunded(self):
+        import DBOper
+
+        DBOper.insert_info(42, 76561197960265770, "旧版停用玩家", 100)
+        DBOper.place_prediction_bet(1, 201, '竞猜者甲', 42, '旧版停用玩家', 1, 100, 2.0, 100)
+        DBOper.place_prediction_bet(1, 202, '竞猜者乙', 42, '旧版停用玩家', 0, 200, 2.0, 100)
+        DBOper.c.execute('UPDATE playerInfo SET enabled=0 WHERE short_steamID=42')
+        DBOper.conn.commit()
+
+        cleaned = DBOper.purge_legacy_disabled_players()
+
+        self.assertEqual(len(cleaned), 1)
+        self.assertEqual(cleaned[0]['account_id'], 42)
+        self.assertEqual(cleaned[0]['refunded_bets'], 2)
+        self.assertEqual(cleaned[0]['refunded_score'], 300)
+        self.assertEqual(DBOper.get_prediction_score(1, 201)['score'], 1000)
+        self.assertEqual(DBOper.get_prediction_score(1, 202)['score'], 1000)
+        self.assertEqual(
+            DBOper.c.execute(
+                'SELECT COUNT(*) FROM prediction_bets WHERE target_account_id=42'
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            DBOper.c.execute(
+                'SELECT COUNT(*) FROM playerInfo WHERE short_steamID=42'
+            ).fetchone()[0],
+            0,
+        )
+        self.assertTrue(DBOper.is_player_stored(42))
+
+    def test_legacy_disable_entry_point_performs_full_deletion(self):
+        import DBOper
+
+        DBOper.insert_info(42, 76561197960265770, "旧入口玩家", 100)
+        DBOper.place_prediction_bet(1, 201, '竞猜者', 42, '旧入口玩家', 1, 100, 2.0, 100)
+
+        self.assertTrue(DBOper.disable_player(42))
+
+        self.assertEqual(DBOper.get_prediction_score(1, 201)['score'], 1000)
+        self.assertEqual(
+            DBOper.c.execute(
+                'SELECT COUNT(*) FROM prediction_bets WHERE target_account_id=42'
+            ).fetchone()[0],
+            0,
+        )
+        self.assertFalse(DBOper.disable_player(42))
+
     def test_forget_player_clears_runtime_state(self):
         common._poll_failures[42] = 2
         common._next_poll_at[42] = 100

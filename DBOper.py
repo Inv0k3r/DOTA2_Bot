@@ -479,13 +479,14 @@ def upsert_player(short_steamID, long_steamID, nickname, last_DOTA2_match_ID):
 
 
 def disable_player(short_steamID):
-    c.execute(
-        "UPDATE playerInfo SET enabled=0 WHERE short_steamID=?",
-        (short_steamID,),
-    )
-    changed = c.rowcount > 0
-    conn.commit()
-    return changed
+    """Backward-compatible deletion entry point; soft deletion is no longer allowed."""
+    exists = c.execute(
+        "SELECT 1 FROM playerInfo WHERE short_steamID=?",
+        (int(short_steamID),),
+    ).fetchone() is not None
+    if exists:
+        delete_player_data(short_steamID)
+    return exists
 
 
 def delete_player_data(short_steamID):
@@ -577,6 +578,22 @@ def delete_player_data(short_steamID):
         'refunded_bets': len(refunded),
         'refunded_score': sum(item['stake'] for item in refunded),
     }
+
+
+def purge_legacy_disabled_players():
+    """Fully remove rows left by the retired enabled=0 deletion behavior."""
+    account_ids = [
+        int(row[0]) for row in c.execute(
+            "SELECT short_steamID FROM playerInfo WHERE enabled=0 ORDER BY short_steamID"
+        ).fetchall()
+    ]
+    return [
+        {
+            'account_id': account_id,
+            **delete_player_data(account_id),
+        }
+        for account_id in account_ids
+    ]
 
 
 def get_enabled_players():
