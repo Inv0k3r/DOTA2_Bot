@@ -129,6 +129,39 @@ class CommonTest(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(tombstones, 0)
 
+    def test_rename_player_updates_all_persisted_display_names(self):
+        import DBOper
+
+        DBOper.insert_info(42, 76561197960265770, '旧昵称', 100)
+        self._record_results(42, [1], group_id=1)
+        DBOper.bind_prediction_player(1, 200, '本人', 42, '旧昵称')
+        DBOper.place_prediction_bet(
+            1, 201, '竞猜者', 42, '旧昵称', 1, 100, 2.0, 100
+        )
+
+        old_nickname = DBOper.rename_player(42, '新昵称')
+
+        self.assertEqual(old_nickname, '旧昵称')
+        self.assertEqual(DBOper.get_enabled_players()[0]['nickname'], '新昵称')
+        self.assertEqual(
+            DBOper.c.execute(
+                'SELECT DISTINCT nickname FROM match_stats WHERE account_id=42'
+            ).fetchall(),
+            [('新昵称',)],
+        )
+        self.assertEqual(
+            DBOper.c.execute(
+                'SELECT DISTINCT target_nickname FROM prediction_bets WHERE target_account_id=42'
+            ).fetchall(),
+            [('新昵称',)],
+        )
+        self.assertEqual(
+            DBOper.c.execute(
+                'SELECT nickname FROM prediction_player_links WHERE account_id=42'
+            ).fetchone()[0],
+            '新昵称',
+        )
+
     def test_legacy_disabled_player_is_fully_purged_and_open_bets_refunded(self):
         import DBOper
 

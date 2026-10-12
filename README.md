@@ -130,6 +130,7 @@ python manage.py report 90045009 "示例玩家" --match-id 1234567890 --send
 
 ```text
 添加监控 <Steam个人主页、SteamID64或Account ID> <群内昵称>
+修改监控 <Account ID、SteamID64或旧昵称> <新昵称>
 删除监控 <群内昵称或Steam ID>
 监控列表
 ```
@@ -138,10 +139,11 @@ python manage.py report 90045009 "示例玩家" --match-id 1234567890 --send
 
 ```text
 添加监控 https://steamcommunity.com/profiles/76561198000000000 示例玩家
+修改监控 示例玩家 新昵称
 删除监控 示例玩家
 ```
 
-名单变更即时生效并持久化到数据库，不需要重启服务。删除监控会同时清理该玩家的战绩、外号、组合、竞猜绑定与相关记录；未结算竞猜会自动退款。`PLAYER_LIST_JSON`
+名单变更即时生效并持久化到数据库，不需要重启服务。修改昵称支持 Account ID、SteamID64 或旧昵称，并同步更新统计、竞猜和绑定中的显示名称；Steam ID、比赛游标、积分和绑定关系不变。删除监控会同时清理该玩家的战绩、外号、组合、竞猜绑定与相关记录；未结算竞猜会自动退款。`PLAYER_LIST_JSON`
 只用于导入尚不存在的新玩家，不会重新启用已经在群内删除的玩家。
 
 ### 群内自定义锐评

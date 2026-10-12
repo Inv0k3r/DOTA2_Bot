@@ -28,6 +28,7 @@ from DBOper import (
     get_prediction_score,
     place_prediction_bet,
     repay_prediction_loan,
+    rename_player,
     save_comment_vote,
     set_combo_name,
     set_player_alias,
@@ -174,6 +175,59 @@ def _remove_player(arguments):
             result['refunded_bets'], result['refunded_score']
         )
     return '已删除监控及全部相关信息：{}{}'.format(tracked.nickname, suffix)
+
+
+def _find_player_for_rename(value):
+    tracked = _find_player(value)
+    if tracked:
+        return tracked
+    normalized = ' '.join(value.split()).casefold()
+    return next(
+        (player for player in PLAYER_LIST
+         if ' '.join(player.nickname.split()).casefold() == normalized),
+        None,
+    )
+
+
+def _rename_player(arguments):
+    words = arguments.split()
+    if len(words) < 2:
+        return '用法：修改监控 <ID或旧昵称> <新昵称>'
+
+    tracked = None
+    nickname = ''
+    for split_at in range(len(words) - 1, 0, -1):
+        candidate = _find_player_for_rename(' '.join(words[:split_at]))
+        if candidate:
+            tracked = candidate
+            nickname = ' '.join(words[split_at:]).strip()
+            break
+    if not tracked:
+        return '没有找到这个监控玩家：{}'.format(' '.join(words[:-1]))
+    if not 1 <= len(nickname) <= 40:
+        return '新昵称长度必须在 1 到 40 个字符之间'
+
+    normalized_new = ' '.join(nickname.split()).casefold()
+    conflict = next(
+        (player for player in PLAYER_LIST
+         if player.short_steamID != tracked.short_steamID
+         and normalized_new in {
+             ' '.join(player.nickname.split()).casefold(),
+             str(player.short_steamID), str(player.long_steamID),
+         }),
+        None,
+    )
+    if conflict:
+        return '修改失败：新昵称与监控玩家「{}」冲突'.format(conflict.nickname)
+
+    old_nickname = tracked.nickname
+    renamed_from = rename_player(tracked.short_steamID, nickname)
+    if renamed_from is None:
+        return '修改失败：该玩家已不在监控列表中'
+    tracked.nickname = nickname
+    return '已修改监控昵称：{} → {}（{}）'.format(
+        old_nickname, nickname, tracked.short_steamID
+    )
 
 
 def _list_players():
@@ -539,6 +593,7 @@ def _help_text():
         'DOTA2 BOT 帮助\n'
         '监控：\n'
         '@bot 添加监控 <Steam链接或ID> <昵称>\n'
+        '@bot 修改监控 <ID或旧昵称> <新昵称>\n'
         '@bot 删除监控 <昵称或ID>\n'
         '@bot 监控列表\n\n'
         '锐评：\n'
@@ -685,6 +740,7 @@ def handle_event(event):
     commands = (
         ('添加监控', _add_player),
         ('监控添加', _add_player),
+        ('修改监控', _rename_player),
         ('删除监控', _remove_player),
         ('监控删除', _remove_player),
     )

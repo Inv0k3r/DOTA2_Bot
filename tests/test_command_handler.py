@@ -52,6 +52,34 @@ class CommandHandlerTest(unittest.TestCase):
         forget.assert_called_once_with(42)
 
     @patch('command_handler.send')
+    @patch('command_handler.rename_player', return_value='旧 昵称')
+    def test_admin_can_rename_player_by_old_nickname(self, rename, send):
+        tracked = Player('旧   昵称', 42, 76561197960265770, 100)
+        PLAYER_LIST.append(tracked)
+        event = dict(self.admin_event, self_id=999, message=[
+            {'type': 'at', 'data': {'qq': '999'}},
+            {'type': 'text', 'data': {'text': ' 修改监控 旧 昵称 新昵称'}},
+        ])
+
+        self.assertTrue(command_handler.handle_event(event))
+        rename.assert_called_once_with(42, '新昵称')
+        self.assertEqual(tracked.nickname, '新昵称')
+        self.assertIn('旧   昵称 → 新昵称', send.call_args.args[0])
+
+    @patch('command_handler.send')
+    @patch('command_handler.rename_player', return_value='旧昵称')
+    def test_member_cannot_rename_player(self, rename, send):
+        PLAYER_LIST.append(Player('旧昵称', 42, 76561197960265770, 100))
+        event = dict(
+            self.admin_event, sender={'role': 'member'},
+            message='修改监控 42 新昵称',
+        )
+
+        self.assertTrue(command_handler.handle_event(event))
+        rename.assert_not_called()
+        send.assert_not_called()
+
+    @patch('command_handler.send')
     def test_member_cannot_change_players(self, send):
         event = dict(self.admin_event, sender={'role': 'member'}, message='添加监控 42 测试玩家')
         self.assertTrue(command_handler.handle_event(event))

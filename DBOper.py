@@ -478,6 +478,40 @@ def upsert_player(short_steamID, long_steamID, nickname, last_DOTA2_match_ID):
     return row[0] if row else last_DOTA2_match_ID
 
 
+def rename_player(short_steamID, nickname):
+    """Rename one enabled tracked player everywhere the display name is persisted."""
+    account_id = int(short_steamID)
+    nickname = str(nickname).strip()
+    if not nickname:
+        raise ValueError('新昵称不能为空')
+    with conn:
+        row = c.execute(
+            """SELECT nickname FROM playerInfo
+               WHERE short_steamID=? AND enabled=1""",
+            (account_id,),
+        ).fetchone()
+        if not row:
+            return None
+        old_nickname = row[0]
+        c.execute(
+            "UPDATE playerInfo SET nickname=? WHERE short_steamID=?",
+            (nickname, account_id),
+        )
+        c.execute(
+            "UPDATE match_stats SET nickname=? WHERE account_id=?",
+            (nickname, account_id),
+        )
+        c.execute(
+            "UPDATE prediction_bets SET target_nickname=? WHERE target_account_id=?",
+            (nickname, account_id),
+        )
+        c.execute(
+            "UPDATE prediction_player_links SET nickname=? WHERE account_id=?",
+            (nickname, account_id),
+        )
+    return old_nickname
+
+
 def disable_player(short_steamID):
     """Backward-compatible deletion entry point; soft deletion is no longer allowed."""
     exists = c.execute(
