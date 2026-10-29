@@ -55,6 +55,13 @@ c.execute(
     "ON match_outbox(status, updated_at)"
 )
 c.execute(
+    """CREATE TABLE IF NOT EXISTS bot_runtime_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    )"""
+)
+c.execute(
     """CREATE TABLE IF NOT EXISTS removed_players (
         short_steamID INTEGER PRIMARY KEY,
         deleted_at INTEGER NOT NULL
@@ -1750,6 +1757,43 @@ def get_match_outbox_status(match_id):
         (match_id,)
     ).fetchone()
     return row[0] if row else None
+
+
+def begin_match_reporting_session(started_at=None, force=False, debounce_seconds=60):
+    """Drop undelivered reports and establish a durable post-login cutoff."""
+    started_at = int(time.time()) if started_at is None else int(started_at)
+    with conn:
+        row = c.execute(
+            "SELECT value FROM bot_runtime_state WHERE key='match_report_cutoff'"
+        ).fetchone()
+        previous = int(row[0]) if row else 0
+        if not force and previous and started_at - previous < int(debounce_seconds):
+            return {
+                'started': False, 'cutoff': previous,
+                'discarded': 0,
+            }
+        pending = c.execute(
+            "SELECT COUNT(*) FROM match_outbox WHERE status='pending'"
+        ).fetchone()[0]
+        c.execute("DELETE FROM match_outbox WHERE status='pending'")
+        c.execute(
+            """INSERT INTO bot_runtime_state(key,value,updated_at)
+               VALUES ('match_report_cutoff',?,?)
+               ON CONFLICT(key) DO UPDATE SET
+                 value=excluded.value,updated_at=excluded.updated_at""",
+            (str(started_at), started_at),
+        )
+    return {
+        'started': True, 'cutoff': started_at,
+        'discarded': int(pending),
+    }
+
+
+def get_match_report_cutoff():
+    row = c.execute(
+        "SELECT value FROM bot_runtime_state WHERE key='match_report_cutoff'"
+    ).fetchone()
+    return int(row[0]) if row else 0
 
 
 def get_match_outbox(match_id):

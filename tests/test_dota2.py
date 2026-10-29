@@ -10,6 +10,7 @@ class Dota2Test(unittest.TestCase):
     def setUp(self):
         DOTA2._opendota_parse_requested.clear()
         DOTA2._match_sequence_numbers.clear()
+        DOTA2._match_start_times.clear()
 
     @patch('DOTA2._request_json')
     def test_recent_matches_use_steam_before_opendota(self, request_json):
@@ -79,6 +80,15 @@ class Dota2Test(unittest.TestCase):
             request_json.call_args_list[1].kwargs['params']['start_at_match_seq_num'],
             456,
         )
+
+    @patch('DOTA2._request_json')
+    def test_recent_matches_cache_start_time_for_login_cutoff(self, request_json):
+        request_json.return_value = {
+            'result': {'matches': [{'match_id': 123, 'start_time': 1700}]}
+        }
+
+        self.assertEqual(DOTA2.get_recent_match_ids_by_short_steamID(42), [123])
+        self.assertEqual(DOTA2.get_cached_match_start_time(123), 1700)
 
     @patch('DOTA2.requests.post')
     def test_parse_request_is_submitted_only_once_per_match(self, post):

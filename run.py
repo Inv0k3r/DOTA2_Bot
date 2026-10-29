@@ -12,7 +12,10 @@ from DBOper import (
     mark_prediction_revival_failed, mark_prediction_revival_sent,
     purge_legacy_disabled_players,
 )
-from common import refresh_match_poll_priorities, steam_id_convert_32_to_64, update_and_send_message_DOTA2
+from common import (
+    begin_new_match_reporting_session, refresh_match_poll_priorities,
+    steam_id_convert_32_to_64, update_and_send_message_DOTA2,
+)
 from event_receiver import process_pending_events, start_event_server
 from message_sender import message as send
 import DOTA2
@@ -72,6 +75,7 @@ def init():
     PLAYER_LIST.clear()
     for row in get_enabled_players():
         PLAYER_LIST.append(Player(**row))
+    begin_new_match_reporting_session(force=True)
     process_prediction_loan_state(force=True)
 
 

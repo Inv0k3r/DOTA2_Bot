@@ -27,6 +27,7 @@ _CONSTANTS_CACHE = {}
 _opendota_retry_at = 0.0
 _opendota_parse_requested = set()
 _match_sequence_numbers = {}
+_match_start_times = {}
 
 
 def _request_json(url: str, params=None, provider="API"):
@@ -117,9 +118,15 @@ def get_recent_match_ids_by_short_steamID(short_steamID: int, limit: int = 20) -
     for item in matches:
         if item.get('match_seq_num') is not None:
             _match_sequence_numbers[int(item['match_id'])] = int(item['match_seq_num'])
+        if item.get('start_time') is not None:
+            _match_start_times[int(item['match_id'])] = int(item['start_time'])
     if not ids:
         raise DOTA2HTTPError('Steam match history contains no visible match')
     return ids
+
+
+def get_cached_match_start_time(match_id: int):
+    return _match_start_times.get(int(match_id))
 
 
 def _get_match_detail_from_opendota(match_id: int) -> Dict:

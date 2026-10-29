@@ -42,6 +42,17 @@ class EventReceiverTest(unittest.TestCase):
         connection.request('POST', '/onebot/' + self.secret, body=b'')
         self.assertEqual(connection.getresponse().status, 204)
 
+    @patch('event_receiver.begin_new_match_reporting_session')
+    def test_lifecycle_connect_starts_fresh_reporting_session(self, begin_session):
+        event_receiver.EVENT_QUEUE.put({
+            'post_type': 'meta_event',
+            'meta_event_type': 'lifecycle',
+            'sub_type': 'connect',
+        })
+
+        self.assertEqual(event_receiver.process_pending_events(), 1)
+        begin_session.assert_called_once_with()
+
 
 if __name__ == '__main__':
     unittest.main()

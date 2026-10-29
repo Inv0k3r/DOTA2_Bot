@@ -11,9 +11,11 @@ import config
 import DOTA2
 from DBOper import (
     acknowledge_sent_match,
+    begin_match_reporting_session,
     enqueue_match,
     enqueue_match_addendum,
     get_match_outbox,
+    get_match_report_cutoff,
     get_pending_matches,
     mark_match_attempt,
     mark_match_failed,
@@ -36,6 +38,22 @@ _active_dota_account_ids = set()
 _active_status_updated_at = 0.0
 _steam_history_failures = 0
 _steam_history_retry_at = 0.0
+
+
+def begin_new_match_reporting_session(started_at=None, force=False):
+    """Start fresh after startup/login and make the cutoff durable."""
+    result = begin_match_reporting_session(started_at=started_at, force=force)
+    if not result['started']:
+        return result
+    _match_detail_failures.clear()
+    _next_match_detail_at.clear()
+    for player in PLAYER_LIST:
+        _next_poll_at[player.short_steamID] = 0
+    logger.warning(
+        "新登录会话从 %s 开始：已丢弃 %s 条未发送战报，登录前比赛将静默跳过",
+        result['cutoff'], result['discarded'],
+    )
+    return result
 
 
 def forget_player(account_id):
@@ -204,6 +222,7 @@ def update_DOTA2() -> Dict:
         and now >= _post_match_cooldown_until.get(tracked_player.short_steamID, 0)
     ]
     result = {}
+    report_cutoff = get_match_report_cutoff()
     if not eligible:
         return result
 
@@ -230,6 +249,15 @@ def update_DOTA2() -> Dict:
                 # Preserve the old behavior by reporting only the newest match in that case.
                 unseen = match_ids[:1]
             for match_id in reversed(unseen):
+                match_start = DOTA2.get_cached_match_start_time(match_id)
+                if report_cutoff and match_start and match_start < report_cutoff:
+                    acknowledge_sent_match(match_id, [tracked_player.short_steamID])
+                    tracked_player.last_DOTA2_match_ID = match_id
+                    logger.info(
+                        "比赛 %s 开始于本次登录前，已为 %s 静默推进游标",
+                        match_id, tracked_player.nickname,
+                    )
+                    continue
                 result.setdefault(match_id, []).append(tracked_player)
 
     return result
@@ -322,6 +350,17 @@ def _queue_detected_matches(detected_matches):
             continue
 
         matched_ids = [player.short_steamID for player in matched_players]
+        report_cutoff = get_match_report_cutoff()
+        match_start = int(match.get('start_time', 0) or 0)
+        if report_cutoff and match_start and match_start < report_cutoff:
+            acknowledge_sent_match(match_id, matched_ids)
+            _sync_player_objects(matched_ids, match_id)
+            _record_match_detail_success(match_id)
+            logger.info(
+                "比赛 %s 开始于本次登录前，已静默跳过且不生成战报或结算",
+                match_id,
+            )
+            continue
         detected_id_set = set(detected_ids)
         auto_discovered = [
             player.nickname for player in matched_players

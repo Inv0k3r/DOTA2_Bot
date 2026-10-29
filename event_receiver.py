@@ -10,6 +10,7 @@ from threading import Thread
 
 import config
 from command_handler import handle_event
+from common import begin_new_match_reporting_session
 
 logger = logging.getLogger(__name__)
 EVENT_QUEUE = Queue(maxsize=1000)
@@ -82,7 +83,14 @@ def process_pending_events(limit=50):
         except Empty:
             break
         try:
-            handle_event(event)
+            if (
+                event.get('post_type') == 'meta_event'
+                and event.get('meta_event_type') == 'lifecycle'
+                and event.get('sub_type') in ('connect', 'enable')
+            ):
+                begin_new_match_reporting_session()
+            else:
+                handle_event(event)
         except Exception:
             logger.exception('处理 OneBot 事件失败')
         finally:

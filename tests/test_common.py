@@ -31,6 +31,7 @@ class CommonTest(unittest.TestCase):
             DBOper.c.execute('DELETE FROM playerInfo')
             DBOper.c.execute('DELETE FROM removed_players')
             DBOper.c.execute('DELETE FROM match_outbox')
+            DBOper.c.execute('DELETE FROM bot_runtime_state')
             DBOper.c.execute('DELETE FROM match_stats')
             DBOper.c.execute('DELETE FROM player_aliases')
             DBOper.c.execute('DELETE FROM combo_names')
@@ -56,6 +57,7 @@ class CommonTest(unittest.TestCase):
         common._next_status_refresh_at = 0
         common._steam_history_failures = 0
         common._steam_history_retry_at = 0
+        DOTA2._match_start_times.clear()
         self.tracked = Player("测试玩家", 42, 76561197960265770, 100)
         PLAYER_LIST.append(self.tracked)
 
@@ -90,6 +92,26 @@ class CommonTest(unittest.TestCase):
         self.assertEqual(player_ids, [42])
         self.assertEqual(DBOper.get_DOTA2_match_ID(42), 101)
         self.assertEqual(DBOper.get_match_outbox_status(101), 'sent')
+
+    def test_new_reporting_session_discards_only_pending_and_debounces(self):
+        import DBOper
+
+        DBOper.enqueue_match(101, '旧积压', [42])
+        DBOper.enqueue_match(102, '已发送', [42])
+        DBOper.mark_match_sent(102, 999)
+
+        first = DBOper.begin_match_reporting_session(started_at=1000, force=True)
+        DBOper.enqueue_match(103, '刚产生', [42])
+        duplicate = DBOper.begin_match_reporting_session(started_at=1005)
+        next_login = DBOper.begin_match_reporting_session(started_at=1100)
+
+        self.assertEqual(first, {'started': True, 'cutoff': 1000, 'discarded': 1})
+        self.assertFalse(duplicate['started'])
+        self.assertEqual(next_login['discarded'], 1)
+        self.assertEqual(DBOper.get_match_report_cutoff(), 1100)
+        self.assertIsNone(DBOper.get_match_outbox(101))
+        self.assertEqual(DBOper.get_match_outbox_status(102), 'sent')
+        self.assertIsNone(DBOper.get_match_outbox(103))
 
     def test_delete_player_clears_related_data_and_refunds_open_bets(self):
         import DBOper
@@ -895,6 +917,28 @@ class CommonTest(unittest.TestCase):
         generate.assert_not_called()
         acknowledge.assert_called_once_with(101, [42])
 
+    @patch('common.DOTA2.generate_match_message')
+    @patch('common.enqueue_match')
+    @patch('common.DOTA2.get_match_detail_info', return_value={
+        'start_time': 900, 'duration': 100,
+        'players': [{'account_id': 42}],
+    })
+    def test_prelogin_match_is_silently_skipped_before_report_generation(
+        self, get_detail, enqueue, generate
+    ):
+        import DBOper
+
+        DBOper.insert_info(42, 76561197960265770, '测试玩家', 100)
+        DBOper.begin_match_reporting_session(started_at=1000, force=True)
+
+        common._queue_detected_matches({101: [self.tracked]})
+
+        generate.assert_not_called()
+        enqueue.assert_not_called()
+        self.assertEqual(self.tracked.last_DOTA2_match_ID, 101)
+        self.assertEqual(DBOper.get_DOTA2_match_ID(42), 101)
+        self.assertIsNone(DBOper.get_match_outbox(101))
+
     @patch("common.DOTA2.generate_match_message", return_value="merged report")
     @patch("common.DOTA2.get_match_detail_info", return_value={
         "start_time": 900, "duration": 100,
@@ -958,6 +1002,23 @@ class CommonTest(unittest.TestCase):
         detected = common.update_DOTA2()
         self.assertEqual(list(detected), [101, 102, 103])
         self.assertEqual(detected[101], [self.tracked])
+
+    @patch('common.DOTA2.get_cached_match_start_time')
+    @patch('common.DOTA2.get_recent_match_ids_by_short_steamID', return_value=[102, 101, 100])
+    def test_history_poll_skips_cached_prelogin_match_without_loading_details(
+        self, _recent, cached_start
+    ):
+        import DBOper
+
+        DBOper.insert_info(42, 76561197960265770, '测试玩家', 100)
+        DBOper.begin_match_reporting_session(started_at=1000, force=True)
+        cached_start.side_effect = lambda match_id: {101: 900, 102: 1100}[match_id]
+
+        detected = common.update_DOTA2()
+
+        self.assertEqual(detected, {102: [self.tracked]})
+        self.assertEqual(self.tracked.last_DOTA2_match_ID, 101)
+        self.assertEqual(DBOper.get_DOTA2_match_ID(42), 101)
 
     @patch('common.DOTA2.get_active_dota_account_ids', return_value=[42])
     @patch('common.time.monotonic', return_value=100)
